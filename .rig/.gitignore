@@ -1,0 +1,8 @@
+state/
+maintain/seen.json
+.baseline
+.gate
+unresolved.json
+gates.jsonl
+changes/*/pr-outline.md
+learn/
