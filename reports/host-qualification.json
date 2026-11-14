@@ -1,0 +1,11 @@
+{
+  "platform": "Darwin",
+  "machine": "arm64",
+  "euid": 501,
+  "kvm": false,
+  "firecracker": null,
+  "jailer": null,
+  "prerequisites_present": false,
+  "qualified": false,
+  "reason": "This host has no Linux/KVM device. Firecracker qualification cannot run here."
+}

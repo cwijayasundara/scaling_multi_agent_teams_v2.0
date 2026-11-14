@@ -1,0 +1,290 @@
+{
+  "profile": "local-trusted-tools",
+  "rows_before_defects": 10000,
+  "seeds": 5,
+  "disclaimer": "Offline overhead experiment, not LLM intelligence, Luna latency, microVM isolation, or useful multi-agent speedup.",
+  "summary": [
+    {
+      "workers": 0,
+      "mode": "reference-sql",
+      "runs": 5,
+      "median_seconds": 0.05242583400104195,
+      "all_correct": true
+    },
+    {
+      "workers": 1,
+      "mode": "sdk-replay",
+      "runs": 5,
+      "median_seconds": 0.22931974999664817,
+      "all_correct": true
+    },
+    {
+      "workers": 2,
+      "mode": "sdk-replay",
+      "runs": 5,
+      "median_seconds": 0.26083670899970457,
+      "all_correct": true
+    },
+    {
+      "workers": 4,
+      "mode": "sdk-replay",
+      "runs": 5,
+      "median_seconds": 0.39104179199784994,
+      "all_correct": true
+    },
+    {
+      "workers": 8,
+      "mode": "sdk-replay",
+      "runs": 5,
+      "median_seconds": 0.6294690000067931,
+      "all_correct": true
+    }
+  ],
+  "measurements": [
+    {
+      "seed": 0,
+      "workers": 0,
+      "mode": "reference-sql",
+      "elapsed_seconds": 0.052656667001429014,
+      "input_hash": "25ff8a9a5ede7afe97ae041254e7b4a1c09a7e87cc2f631a28ed791d9c3abc06",
+      "correct": true,
+      "model_calls": 0
+    },
+    {
+      "seed": 0,
+      "workers": 1,
+      "mode": "sdk-replay",
+      "elapsed_seconds": 0.7513049169938313,
+      "input_hash": "25ff8a9a5ede7afe97ae041254e7b4a1c09a7e87cc2f631a28ed791d9c3abc06",
+      "correct": true,
+      "model_calls": 11,
+      "tool_calls": 9
+    },
+    {
+      "seed": 0,
+      "workers": 2,
+      "mode": "sdk-replay",
+      "elapsed_seconds": 0.2523654590040678,
+      "input_hash": "25ff8a9a5ede7afe97ae041254e7b4a1c09a7e87cc2f631a28ed791d9c3abc06",
+      "correct": true,
+      "model_calls": 17,
+      "tool_calls": 14
+    },
+    {
+      "seed": 0,
+      "workers": 4,
+      "mode": "sdk-replay",
+      "elapsed_seconds": 0.39104179199784994,
+      "input_hash": "25ff8a9a5ede7afe97ae041254e7b4a1c09a7e87cc2f631a28ed791d9c3abc06",
+      "correct": true,
+      "model_calls": 29,
+      "tool_calls": 24
+    },
+    {
+      "seed": 0,
+      "workers": 8,
+      "mode": "sdk-replay",
+      "elapsed_seconds": 0.643654332990991,
+      "input_hash": "25ff8a9a5ede7afe97ae041254e7b4a1c09a7e87cc2f631a28ed791d9c3abc06",
+      "correct": true,
+      "model_calls": 53,
+      "tool_calls": 44
+    },
+    {
+      "seed": 1,
+      "workers": 0,
+      "mode": "reference-sql",
+      "elapsed_seconds": 0.05315537500428036,
+      "input_hash": "18b40f79168c85d7a552bf0d37da79c1c5ed642e3f0d2934b47dad5f4e3bd7a0",
+      "correct": true,
+      "model_calls": 0
+    },
+    {
+      "seed": 1,
+      "workers": 1,
+      "mode": "sdk-replay",
+      "elapsed_seconds": 0.20267975000024308,
+      "input_hash": "18b40f79168c85d7a552bf0d37da79c1c5ed642e3f0d2934b47dad5f4e3bd7a0",
+      "correct": true,
+      "model_calls": 11,
+      "tool_calls": 9
+    },
+    {
+      "seed": 1,
+      "workers": 2,
+      "mode": "sdk-replay",
+      "elapsed_seconds": 0.2950332500040531,
+      "input_hash": "18b40f79168c85d7a552bf0d37da79c1c5ed642e3f0d2934b47dad5f4e3bd7a0",
+      "correct": true,
+      "model_calls": 17,
+      "tool_calls": 14
+    },
+    {
+      "seed": 1,
+      "workers": 4,
+      "mode": "sdk-replay",
+      "elapsed_seconds": 0.3763895410083933,
+      "input_hash": "18b40f79168c85d7a552bf0d37da79c1c5ed642e3f0d2934b47dad5f4e3bd7a0",
+      "correct": true,
+      "model_calls": 29,
+      "tool_calls": 24
+    },
+    {
+      "seed": 1,
+      "workers": 8,
+      "mode": "sdk-replay",
+      "elapsed_seconds": 0.6412744580011349,
+      "input_hash": "18b40f79168c85d7a552bf0d37da79c1c5ed642e3f0d2934b47dad5f4e3bd7a0",
+      "correct": true,
+      "model_calls": 53,
+      "tool_calls": 44
+    },
+    {
+      "seed": 2,
+      "workers": 0,
+      "mode": "reference-sql",
+      "elapsed_seconds": 0.05234095799096394,
+      "input_hash": "889e6151087451f3d2a2e08896ecf2320fb7eb842f221da168ad48404847b1ac",
+      "correct": true,
+      "model_calls": 0
+    },
+    {
+      "seed": 2,
+      "workers": 1,
+      "mode": "sdk-replay",
+      "elapsed_seconds": 0.22931974999664817,
+      "input_hash": "889e6151087451f3d2a2e08896ecf2320fb7eb842f221da168ad48404847b1ac",
+      "correct": true,
+      "model_calls": 11,
+      "tool_calls": 9
+    },
+    {
+      "seed": 2,
+      "workers": 2,
+      "mode": "sdk-replay",
+      "elapsed_seconds": 0.26083670899970457,
+      "input_hash": "889e6151087451f3d2a2e08896ecf2320fb7eb842f221da168ad48404847b1ac",
+      "correct": true,
+      "model_calls": 17,
+      "tool_calls": 14
+    },
+    {
+      "seed": 2,
+      "workers": 4,
+      "mode": "sdk-replay",
+      "elapsed_seconds": 0.41157958400435746,
+      "input_hash": "889e6151087451f3d2a2e08896ecf2320fb7eb842f221da168ad48404847b1ac",
+      "correct": true,
+      "model_calls": 29,
+      "tool_calls": 24
+    },
+    {
+      "seed": 2,
+      "workers": 8,
+      "mode": "sdk-replay",
+      "elapsed_seconds": 0.6046491669985699,
+      "input_hash": "889e6151087451f3d2a2e08896ecf2320fb7eb842f221da168ad48404847b1ac",
+      "correct": true,
+      "model_calls": 53,
+      "tool_calls": 44
+    },
+    {
+      "seed": 3,
+      "workers": 0,
+      "mode": "reference-sql",
+      "elapsed_seconds": 0.05049737499211915,
+      "input_hash": "55488c86019dfde0a7ad251cfc3c10a76d7b103bbbe8bd667470628f11d8eebc",
+      "correct": true,
+      "model_calls": 0
+    },
+    {
+      "seed": 3,
+      "workers": 1,
+      "mode": "sdk-replay",
+      "elapsed_seconds": 0.23092520800128113,
+      "input_hash": "55488c86019dfde0a7ad251cfc3c10a76d7b103bbbe8bd667470628f11d8eebc",
+      "correct": true,
+      "model_calls": 11,
+      "tool_calls": 9
+    },
+    {
+      "seed": 3,
+      "workers": 2,
+      "mode": "sdk-replay",
+      "elapsed_seconds": 0.25963883398799226,
+      "input_hash": "55488c86019dfde0a7ad251cfc3c10a76d7b103bbbe8bd667470628f11d8eebc",
+      "correct": true,
+      "model_calls": 17,
+      "tool_calls": 14
+    },
+    {
+      "seed": 3,
+      "workers": 4,
+      "mode": "sdk-replay",
+      "elapsed_seconds": 0.39515366600244306,
+      "input_hash": "55488c86019dfde0a7ad251cfc3c10a76d7b103bbbe8bd667470628f11d8eebc",
+      "correct": true,
+      "model_calls": 29,
+      "tool_calls": 24
+    },
+    {
+      "seed": 3,
+      "workers": 8,
+      "mode": "sdk-replay",
+      "elapsed_seconds": 0.6294690000067931,
+      "input_hash": "55488c86019dfde0a7ad251cfc3c10a76d7b103bbbe8bd667470628f11d8eebc",
+      "correct": true,
+      "model_calls": 53,
+      "tool_calls": 44
+    },
+    {
+      "seed": 4,
+      "workers": 0,
+      "mode": "reference-sql",
+      "elapsed_seconds": 0.05242583400104195,
+      "input_hash": "5a8c3248b79506a4111fb579befb5fae9f0a6cc73148cacfc8d89426c5916664",
+      "correct": true,
+      "model_calls": 0
+    },
+    {
+      "seed": 4,
+      "workers": 1,
+      "mode": "sdk-replay",
+      "elapsed_seconds": 0.19269149999308866,
+      "input_hash": "5a8c3248b79506a4111fb579befb5fae9f0a6cc73148cacfc8d89426c5916664",
+      "correct": true,
+      "model_calls": 11,
+      "tool_calls": 9
+    },
+    {
+      "seed": 4,
+      "workers": 2,
+      "mode": "sdk-replay",
+      "elapsed_seconds": 0.2852357499941718,
+      "input_hash": "5a8c3248b79506a4111fb579befb5fae9f0a6cc73148cacfc8d89426c5916664",
+      "correct": true,
+      "model_calls": 17,
+      "tool_calls": 14
+    },
+    {
+      "seed": 4,
+      "workers": 4,
+      "mode": "sdk-replay",
+      "elapsed_seconds": 0.37382500000239816,
+      "input_hash": "5a8c3248b79506a4111fb579befb5fae9f0a6cc73148cacfc8d89426c5916664",
+      "correct": true,
+      "model_calls": 29,
+      "tool_calls": 24
+    },
+    {
+      "seed": 4,
+      "workers": 8,
+      "mode": "sdk-replay",
+      "elapsed_seconds": 0.6267174579988932,
+      "input_hash": "5a8c3248b79506a4111fb579befb5fae9f0a6cc73148cacfc8d89426c5916664",
+      "correct": true,
+      "model_calls": 53,
+      "tool_calls": 44
+    }
+  ]
+}

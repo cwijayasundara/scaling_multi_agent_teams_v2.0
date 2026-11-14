@@ -1,0 +1,23 @@
+{
+  "server": "minio-loopback-object-lock",
+  "bucket": "teamlab-audit",
+  "aws_account": false,
+  "object_lock": true,
+  "versioned_write": true,
+  "duplicate_rejected": true,
+  "delete_rejected": true,
+  "object_still_present": true,
+  "outage_fails_closed": true,
+  "restricted_writer_cannot_delete": true,
+  "gateway_service_append": true,
+  "errors": [],
+  "version_id_present": true,
+  "delete_error_code": "InvalidRequest",
+  "passed_adapter": true,
+  "writer_delete_error_code": "AccessDenied",
+  "writer_policy_change_rejected": "AccessDenied",
+  "grader_holds_archive_key": false,
+  "gateway_holds_archive_key": true,
+  "passed": true,
+  "note": "MinIO on 127.0.0.1 with Object Lock, COMPLIANCE retention, SSE-S3, and a writer identity denied delete and bucket-policy changes. Not an AWS account or IAM qualification."
+}

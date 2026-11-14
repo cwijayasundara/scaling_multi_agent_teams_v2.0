@@ -1,0 +1,25 @@
+{
+  "server": "postgresql",
+  "server_version": "16.16 (Homebrew)",
+  "address": "127.0.0.1",
+  "port": 54329,
+  "database": "teamlab",
+  "role": "teamlab_app",
+  "role_is_superuser": false,
+  "database_bytes": 8354839,
+  "server_statement_timeout": "0",
+  "server_lock_timeout": "0",
+  "adapter_statement_timeout": "5s",
+  "adapter_lock_timeout": "5s",
+  "quota_gate": "TEAMLAB_DATABASE_QUOTA_BYTES compared with pg_database_size on connect",
+  "tablespace_disk_quota": false,
+  "tests": [
+    "test_postgres_dynamic_claim_and_stop_fencing",
+    "test_postgres_adapter_rejects_unreachable_database",
+    "test_postgres_lock_timeout_blocks_a_second_transaction",
+    "test_postgres_statement_timeout_and_storage_quota"
+  ],
+  "suite": "83 passed, 3 skipped; the three skips are tests/test_linux_execution.py without TEAMLAB_TEST_BROKER_SOCKET",
+  "passed": true,
+  "note": "Disposable loopback PostgreSQL 16 with a non-superuser owner role. The adapter sets 5 second statement and lock timeouts and can refuse connect when TEAMLAB_DATABASE_QUOTA_BYTES is below pg_database_size. This is not a PostgreSQL tablespace or disk quota and does not enforce the 256 MiB deployment policy by itself."
+}

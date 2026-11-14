@@ -1,0 +1,26 @@
+[Unit]
+Description=TeamLab separated control-plane supervisor
+After=network-online.target
+
+[Service]
+Type=simple
+User=teamlab-plane
+Group=teamlab-plane
+WorkingDirectory=/opt/teamlab
+Environment=PYTHONPATH=/opt/teamlab/src
+EnvironmentFile=/etc/teamlab/plane.env
+ExecStart=/usr/bin/python3 -m teamlab plane --root /var/lib/teamlab/plane --archive-dir /var/lib/teamlab/plane/retention
+# For S3 Object Lock, replace the archive directory with operator flags:
+# --audit-bucket BUCKET --audit-endpoint https://s3.amazonaws.com
+Restart=on-failure
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/teamlab/plane
+# plane.env is mode 0600 and holds only OPENAI_API_KEY and archive credentials.
+# Do not give this file to the runtime unit. Distinct UIDs are required for the
+# deployment claim; the supervisor's same-user token split is the local profile.
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "secure-teamlab"
+version = "0.1.0"
+description = "A bounded multi-agent analytics experiment with external action enforcement"
+requires-python = ">=3.12"
+dependencies = ["deepagents==0.7.32", "langchain-openai==1.7.3", "openai==3.42.0"]
+
+[project.optional-dependencies]
+test = ["pytest==9.2.0"]
+postgres = ["psycopg[binary]>=3.2,<4"]
+audit = ["boto3>=1.40,<2"]
+
+[project.scripts]
+teamlab = "teamlab.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+

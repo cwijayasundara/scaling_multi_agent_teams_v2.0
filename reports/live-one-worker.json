@@ -1,0 +1,51 @@
+{
+  "prices_usd_per_million": {
+    "input": "0.10",
+    "output": "0.50",
+    "source": "Operator-supplied gpt-6-luna standard rates reported by LiteLLM and AI Dev Toolkit on 2026-11-13/14. Not an OpenAI invoice and not a cache-write repricing."
+  },
+  "budget_usd": "1",
+  "workers": 1,
+  "rows": 20,
+  "seed": 1,
+  "control_plane": true,
+  "attempts": [
+    {
+      "root": "runs/live-one-worker",
+      "run_id": "ea60b0c2c369c4c187dd4fa4",
+      "state": "PAUSED",
+      "reason": "inference budget",
+      "model_call_limit": 12,
+      "tool_call_limit": 20,
+      "max_requests": 40,
+      "model_calls": 12,
+      "task_created": true,
+      "task_title": "Analyze supplied synthetic retail dataset and produce report",
+      "calculation_completed": false,
+      "input_tokens": 15478,
+      "output_tokens": 555,
+      "estimated_usd_at_supplied_rates": "0.0018253",
+      "note": "The 12-call ceiling counted agent and monitor requests. The coordinator created one root task. The dollar cap was not reached. The CLI does not persist the in-memory reservation total."
+    },
+    {
+      "root": "runs/live-one-worker-80",
+      "run_id": "fce628b51405c637151a1fad",
+      "state": "PAUSED",
+      "reason": "luna-team-context-v1: PAUSE on coordinator/list_tasks",
+      "model_call_limit": 80,
+      "tool_call_limit": 40,
+      "max_requests": 80,
+      "model_calls": 3,
+      "tool_calls": 0,
+      "task_created": false,
+      "calculation_completed": false,
+      "input_tokens": 2213,
+      "output_tokens": 97,
+      "estimated_usd_at_supplied_rates": "0.0002698",
+      "note": "The contextual monitor paused the team on the first coordinator list_tasks call. No further attempt was made."
+    }
+  ],
+  "completed": false,
+  "scaling": "Not run above 1 worker. The 1-worker tier did not complete.",
+  "guest_recovery": "Not run. This host cannot start a Firecracker guest."
+}

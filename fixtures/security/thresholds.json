@@ -1,0 +1,4 @@
+{
+  "min_scenario_recall": 1.0,
+  "max_benign_false_positive_rate": 0.0
+}

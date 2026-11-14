@@ -1,0 +1,22 @@
+[Unit]
+Description=TeamLab runtime without model or archive credentials
+After=teamlab-plane.service
+
+[Service]
+Type=simple
+User=teamlab-runtime
+Group=teamlab-runtime
+WorkingDirectory=/opt/teamlab
+Environment=PYTHONPATH=/opt/teamlab/src
+Environment=TEAMLAB_DATABASE_URL=postgresql://teamlab-runtime@127.0.0.1/teamlab
+ExecStart=/usr/bin/python3 -c 'raise SystemExit("Replace this unit with a live command only after provider prices and a spend limit are verified")'
+# Example after that review:
+# python3 -m teamlab run --root /var/lib/teamlab/runtime --mode live --workflow collaborative --control-plane /var/lib/teamlab/plane --require-external-audit --budget-usd BUDGET --input-usd-per-million INPUT --output-usd-per-million OUTPUT
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+# This unit intentionally has no EnvironmentFile for provider or archive keys.
+# Replace the spend flags with operator-verified prices before a live run.
+
+[Install]
+WantedBy=multi-user.target
