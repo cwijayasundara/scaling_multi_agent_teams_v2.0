@@ -324,11 +324,12 @@ def test_sdk_guard_blocks_auto_added_filesystem_tool(controller):
     assert controller.store.run(controller.run_id)["state"] == "STOPPED"
 
 
-def test_live_mode_requires_key_and_microvm_never_falls_back(tmp_path, monkeypatch):
+def test_live_mode_requires_key_and_openshell_never_falls_back(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     assert main(["run", "--mode", "live", "--root", str(tmp_path)]) == 1
-    assert main(["run", "--execution-profile", "microvm", "--root", str(tmp_path)]) == 1
+    assert main(["run", "--execution-profile", "openshell", "--root", str(tmp_path)]) == 1
+    assert main(["run", "--workflow", "authored", "--mode", "live", "--root", str(tmp_path)]) == 1
     assert not (tmp_path / "control.sqlite3").exists()
 
 

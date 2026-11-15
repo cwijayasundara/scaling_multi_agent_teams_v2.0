@@ -1,11 +1,58 @@
 {
   "platform": "Darwin",
   "machine": "arm64",
-  "euid": 501,
-  "kvm": false,
-  "firecracker": null,
-  "jailer": null,
-  "prerequisites_present": false,
-  "qualified": false,
-  "reason": "This host has no Linux/KVM device. Firecracker qualification cannot run here."
+  "profile": "openshell-vm-v1",
+  "openshell_version": "0.1.8",
+  "expected_guest_kernel": "6.12.109",
+  "image": "docker.io/library/python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+  "checks": [
+    {
+      "name": "gateway_connected_at_pinned_version",
+      "passed": true,
+      "detail": {
+        "ready": true,
+        "profile": "openshell-vm-v1",
+        "gateway_version": "0.1.8"
+      },
+      "seconds": 0.03
+    },
+    {
+      "name": "guest_unprivileged_readonly_offline",
+      "passed": true,
+      "detail": {
+        "uid": 1000,
+        "kernel": "6.12.109",
+        "etc_writable": false,
+        "egress_ip": false,
+        "egress_private": false,
+        "dns_answers": [
+          "198.18.0.2",
+          "198.18.0.3"
+        ],
+        "dns_upstream": false,
+        "egress_placeholder": false,
+        "interfaces": "unreadable"
+      },
+      "seconds": 2.57
+    },
+    {
+      "name": "runaway_calculation_terminates",
+      "passed": true,
+      "detail": {
+        "terminated_after_seconds": 22.5
+      },
+      "seconds": 22.54
+    },
+    {
+      "name": "no_leftover_sandboxes",
+      "passed": true,
+      "detail": {
+        "leftover_sandboxes": 0
+      },
+      "seconds": 5.25
+    }
+  ],
+  "qualified": true,
+  "scope": "Selected boundary properties of this host and gateway. Not a production audit; re-run after any OpenShell, image or host change.",
+  "recorded_at": "2026-11-15T07:52:57Z"
 }

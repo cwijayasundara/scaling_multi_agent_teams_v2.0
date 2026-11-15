@@ -2,7 +2,6 @@
 import hashlib
 import json
 import os
-import platform
 import threading
 import time
 import urllib.error
@@ -155,10 +154,8 @@ def test_peer_uid_and_runtime_credential_split(tmp_path, monkeypatch):
     assert 'OPENAI_API_KEY' not in os.environ
 
 
-def test_host_qualification_command_stays_unqualified(tmp_path):
-    code = main(['qualify-host', '--output', str(tmp_path / 'host.json')])
+def test_host_qualification_fails_closed_without_a_reachable_gateway(tmp_path):
+    code = main(['qualify-host', '--output', str(tmp_path / 'host.json'), '--openshell-gateway', 'teamlab-missing-gateway'])
     report = json.loads((tmp_path / 'host.json').read_text())
-    assert report['qualified'] is False
-    assert code == 2
-    if platform.system() != 'Linux':
-        assert report['kvm'] is False
+    assert report['qualified'] is False and code == 2
+    assert not report['checks'][0]['passed']

@@ -34,7 +34,7 @@ def snapshot(store, run_id):
         'events': events, 'summaries': summaries,
         'execution': {'profile': 'trusted-tools', 'isolation': 'Shared Python runtime',
                       'sandboxed': False, 'code_execution': config.get('code_execution', 'trusted-baseline'),
-                      'description': 'Shared agent runtime; authored code uses a fresh broker VM per execution. Deployment qualification required.' if authored else 'Fixed trusted tools; no per-agent container or microVM.'},
+                      'description': 'Shared agent runtime; authored code uses a fresh offline OpenShell microVM per execution. Re-run qualify-host after any gateway or image change.' if authored else 'Fixed trusted tools; no per-agent container or microVM.'},
     }
 
 

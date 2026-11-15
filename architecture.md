@@ -1,0 +1,286 @@
+# Secure TeamLab: how it works and how it maps to the Fable 5.2 post
+
+This document explains the architecture of Secure TeamLab and compares it with the claude.dev post [Safely scaling multi-agent teams with Claude Fable 5.2](https://claude.dev/blog/safely-scaling-multi-agent-teams-with-fable-5-2/) (9 Nov 2026). It describes the code as it is in `src/teamlab/`, `dashboard/` and `infra/`. Measured results live in `reports/`. The design rationale lives in `RESEARCH_AND_BUILD_APPROACH.md`, and the threat model lives in `SECURITY.md`.
+
+> **Status.** TeamLab is a small, bounded replica of the *pattern* in the post. It is not a reproduction of the post's results. Offline replay works end to end. Live runs are limited: a 1-worker live collaborative run did not complete. Authored code runs in OpenShell microVM sandboxes; live boundary checks passed on **one macOS dev host only**, not a production Linux host. The frozen offline reviewer scored **0.0 recall** on both its development and holdout suites. None of the results here are evidence of safety.
+
+---
+
+## 1. The post in one paragraph
+
+In the post, 1,000 Fable 5.2 agents (one lead and 999 helpers, organised into crews with captains) reproduced a Lean proof of Fermat's Last Theorem in 28.7 hours. They had only general tools: a shell and file editor, their own Git branch, and a shared Postgres "task board" with five tables (Announce, Assign, Notes, Subtasks, Landed). Each agent ran in **its own lightweight VM with no network**. The only link out was a pipe to a **gateway** outside the sandbox. The gateway called the Claude API, relayed Git and SQL, tagged every request with the agent's identity and logged everything. Safety rested on three layers:
+
+1. **Sandboxing.** No network, no credentials, an unprivileged user, a hardened lockdown kernel, and a 5 s / 256 MiB limit per SQL statement.
+2. **Real-time monitoring.** A fail-closed, prompted LLM classifier checked every tool call before it ran. The run used an action-only monitor; a chain-of-thought (CoT) monitor was added after the run.
+3. **Offline monitoring.** The same threat models were run over the gateway's run records, with the added ability to look across agents.
+
+The post's lessons were: general tools can suffice; use shared transactional state; keep humans at key decision points; layer defences; monitor both CoT and actions; and design for misalignment.
+
+## 2. What TeamLab builds instead
+
+The task is deliberately easy, so that orchestration and safety are what you observe. On a **synthetic retail CSV**, the team must find which of four regions has the highest verified net sales, report sales and refunds per region, and give row-level reasons for every excluded or deduplicated record (`fixture.py`, `analytics.py`). A protected **reference grader** (`grader.py`) computes the answer independently in SQLite and is the correctness authority. Model output never is.
+
+| | Post | TeamLab |
+|---|---|---|
+| Model | Claude Fable 5.2 | `gpt-6-luna` through the OpenAI Responses API (`agents.py`), or a deterministic `ReplayModel` that is *not an LLM* |
+| Harness | Anthropic internal | LangChain **Deep Agents** (`create_deep_agent`) with custom `Guard` middleware |
+| Team | 1 lead + 999 helpers in crews | 1 coordinator + 1–8 workers + 1 verifier (`Controller` enforces `1 <= workers <= 8`) |
+| Workload | Lean proof, 60 statements | Sharded CSV aggregation with injected defects and a prompt-injection note |
+
+### Run modes and workflows
+
+The CLI is `teamlab run` (`cli.py`). Mode and workflow are chosen separately:
+
+- `--mode`: `scripted` (plain Python, no SDK), `sdk-replay` (real Deep Agents graphs driven by `ReplayModel`), or `live` (billable; requires `--budget-usd` and per-million token prices).
+- `--workflow`:
+  - `fixed`: the coordinator delegates one hash shard to each worker synchronously.
+  - `collaborative`: an agent-built task tree on a shared board, with dynamic claims, splits, notes and blockers. This is the closest analogue of the post.
+  - `authored`: workers write their own Python, which runs **only** in a disposable OpenShell microVM sandbox.
+
+## 3. Component map
+
+```mermaid
+flowchart TD
+    OP[Operator CLI: teamlab run / stop / restart] --> CTRL[Controller: controller.py]
+    CTRL --> TEAM[Deep Agents graphs: agents.py / collaborative.py]
+    TEAM -->|every model call| GUARD[Guard middleware]
+    TEAM -->|every tool call| GW[Gateway: security.py]
+    GUARD --> GW
+    GW --> MON[Monitors: RuleMonitor + LunaMonitor action + LunaMonitor context]
+    GW --> JOURNAL[(Journal audit.jsonl hash chain)]
+    GW --> ARCH[(Optional S3 Object Lock archive: archive.py)]
+    GW --> STORE[(Store: SQLite or Postgres: runs, tasks, events)]
+    GW --> BOARD[Board: work, work_notes, work_artifacts: board.py]
+    BOARD --> GRADER[Reference grader: grader.py]
+    BOARD --> ART[Artifacts + controller-owned Git: artifacts.py]
+    ART --> BROKER[OpenShellBroker: execution.py]
+    BROKER -->|openshell CLI, scrubbed env| SVC[OpenShell gateway, vm driver]
+    SVC -->|libkrun + vsock, no NIC| VM[Disposable OpenShell microVM sandbox]
+    GUARD -->|optional| PLANE[Control plane: plane.py: model-proxy, grader, integration, gateway-archive]
+    STORE --> API[Read-only monitoring API: monitoring.py :8765]
+    API -->|SSE + JSON, bearer token| UI[Next.js dashboard :3000]
+    STORE --> REVIEW[Offline review: review.py + behavior.py]
+```
+
+| Module | Responsibility | Must not |
+|---|---|---|
+| `controller.py` | Creates the run (id, epoch 1, 20-minute deadline, call limits), shards input by stable hash of `event_id`, issues identities, exports the evidence bundle | Let agents pick paths, identities or input |
+| `agents.py` | Builds coordinator, worker and verifier graphs. `Guard` hides every auto-added Deep Agents tool (filesystem, `task`, planning) and reserves inference budget for each model call | Expose a host shell or filesystem backend |
+| `collaborative.py` | Round-based scheduler: coordinator turn → parallel worker turns → verifier turn → integrate → checkpoint, for at most 32 rounds | Let workers message or invoke each other directly |
+| `security.py` | `Gateway`: authentication, capability check, monitors, audit-before-dispatch, epoch-fenced commit | Accept identity from model arguments |
+| `board.py` | Run-scoped task tree with leases, fencing tokens, exact partition coverage and quotas | Let a worker verify its own work |
+| `store.py` / `postgres.py` | Transactional state and the durable `events` outbox. `stop()` increments the run epoch | Serve another run's rows |
+| `execution.py` / `infra/` | OpenShell sandbox driver, pinned policy and guest runner | Execute model code on the host, or inherit API/DB credentials |
+| `plane.py` | Optional separate processes for grader, Git integration, archive gateway and model proxy, each with a scrubbed environment and its own token | Give the runtime the provider key (only `model-proxy` gets it) |
+| `monitoring.py` | Read-only loopback HTTP and SSE API | Expose approve, restart or policy changes |
+| `review.py` / `behavior.py` | Deterministic post-run checks and the LLM behavioural reviewer | Claim findings without event evidence |
+| `budget.py` | Spend reservations at operator-supplied prices, shared by agents and monitors | Refund reservations or guess prices |
+| `recovery.py` | Durable LangGraph checkpointer and quiescent round-boundary task snapshots | Resume in-flight instructions |
+
+## 4. The core mechanism: every action goes through `Gateway.call`
+
+This is TeamLab's equivalent of the post's "gateway outside the sandbox". Tools are Python closures that capture a secret capability token, so the model never sees or chooses its identity. Each tool call follows these steps (`security.py:270`):
+
+```text
+1. require(token, action)
+     - resolve token -> Identity(run_id, agent_id, role, epoch, shard)   [server-side]
+     - run must be RUNNING, epoch must match, deadline not passed
+     - action not in CAPABILITIES[role]  -> STOP ENTIRE TEAM
+2. args contain agent_id/run_id/role/epoch/token -> STOP ENTIRE TEAM
+   args > 512 KB                                  -> PAUSE
+3. load last 256 events of this run as context
+4. for each monitor (RuleMonitor, LunaMonitor action, LunaMonitor context):
+     - Luna monitors reserve inference budget first
+     - bounded_monitor(): own thread, timeout (default 10 s)
+     - verdict BLOCK  -> event action.denied, run STOPPED (epoch+1)
+     - verdict PAUSE  -> event action.denied, run PAUSED  (epoch+1)
+     - timeout / exception / invalid verdict -> PAUSED (fail closed)
+5. write the decision record to Journal (hash chain, fsync) and, optionally, S3 Object Lock
+     - audit write fails -> PAUSED, action NOT dispatched
+6. single DB transaction:
+     - lock run row, re-check state/epoch/deadline  (operator stop uses the same lock)
+     - tool-call budget exhausted -> PAUSED
+     - event action.authorized -> handler(db, who) -> event action.committed
+```
+
+The ordering matters for three reasons:
+
+- **Monitoring and audit happen before the action runs.** No unclassified or unrecorded action executes.
+- **The epoch is the kill switch.** Every stop or pause increments `runs.epoch`, so every token issued before that point becomes stale at once, for every agent, even in other processes.
+- **The handler runs inside the same transaction that re-checks the epoch.** A stop that races a commit cannot let a stale result land.
+
+`Guard` adds the same treatment to model calls. `reserve_inference` counts every call against `model_call_limit`, and `record_inference` calls `active()`, so a late model response cannot authorise further work.
+
+### Role capabilities (`security.py:40`)
+
+| Role | Fixed workflow | Added in collaborative/authored |
+|---|---|---|
+| coordinator | `record_plan`, `delegate`, `get_progress`, `request_verification`, `publish` | `create_task`, `split_task`, `reprioritize_task`, `integrate_task`, `integrate_artifact`, `publish_work`, plus the common board tools |
+| worker | `claim_task`, `inspect_shard`, `calculate_shard`, `submit_result`, `post_note` | `claim_work`, `split_task`, `inspect_work`, `calculate_work`, `submit_task`, `report_blocker`, `write_artifact`, `run_artifact`, `record_execution` |
+| verifier | `verify_candidates`, `post_note` | `verify_task`, `verify_artifact`, `record_verification` |
+
+The common board tools are `list_tasks`, `read_notes` and `post_note`. There is no generic SQL, HTTP, shell or Git tool. Anything not in the table is a capability violation. `make attack` demonstrates this: a worker calls `fetch_url`, the whole team stops, and a teammate's next `claim` is rejected.
+
+## 5. Shared state: the task board
+
+The post's agents built their own coordination on five Postgres tables. TeamLab provides a fixed, service-owned schema. Agents use it only through gateway tools.
+
+| Post table | TeamLab equivalent |
+|---|---|
+| Announce (lead's orders) | Coordinator `record_plan` notes and the scheduler prompt each round |
+| Assign (who works on what) | Fixed workflow: one shard per worker. Collaborative workflow: `work.owner` with leases; `reprioritize_task` |
+| Notes (open board) | `work_notes`: at most 2,000 characters per note, 256 notes per run, treated as **untrusted evidence** |
+| Subtasks (first claim wins) | `work` rows, claimed with `claim()`. `split()` creates 2–16 children with *exact* partition coverage, up to depth 8 and 128 tasks |
+| Landed (finished work log) | States `VERIFIED` → `DONE` via `integrate()`. Parents roll up when all children are done. `work_artifacts` plus a controller-owned Git repository hold authored source |
+
+Each task moves through this lifecycle:
+
+```text
+READY -> LEASED -> SUBMITTED -> VERIFIED -> DONE
+                        \-> FAILED     (grader rejects)
+LEASED -> BLOCKED (report_blocker, or attempts >= 2)
+LEASED -> WAITING (split into children)
+```
+
+Leases last 300 s and carry a **fencing token** (`fence`) that increments on every claim, split or block. A worker whose lease expired, or whose task was re-leased, cannot submit. Only the verifier can move a task to `VERIFIED`, and only the coordinator can integrate it. Before publication, the grader checks the root's combined result against the full input again.
+
+Every state change writes a row to the `events` table: `task.created`, `task.claimed`, `note.posted`, `action.denied`, `run.stopped`, and so on. That outbox drives the dashboard, the offline reviewers and the exported bundle.
+
+## 6. Sandboxing: the main gap from the post
+
+The post gives *every agent a persistent offline VM* with a shell. TeamLab has two execution profiles.
+
+**`trusted-tools` (the default; it is what actually runs).** No model-written code executes at all. Workers call fixed trusted functions (`analyze`, `combine`) on shards selected by the controller. All agents share **one Python process**. There is no per-agent container or VM. The dashboard shows this honestly as `sandboxed: false`. This profile is a *capability* boundary, not an *isolation* boundary.
+
+**`openshell` (the `authored` workflow).** The flow for authored code:
+
+1. The worker calls `write_artifact`. The source is stored content-addressed and bound to task, fence and author.
+2. The worker calls `run_artifact`. `OpenShellBroker.execute` (profile `openshell-vm-v1`) drives the `openshell` CLI with model, database and AWS credentials removed from its environment. Preflight requires a connected gateway at the pinned version (0.1.8).
+3. For **each execution**, it creates a fresh sandbox from a digest-pinned `python:3.12-slim` image on a gateway whose compute driver is `vm` (libkrun; Hypervisor.framework on macOS, KVM on Linux), with:
+   - a pinned policy: no `network_policies` (deny-all egress), Landlock `hard_requirement`, read-only system paths and writable `/tmp` only;
+   - no guest network interface;
+   - 1 vCPU and 1 GiB of memory (set gateway-wide, not per sandbox);
+   - a 30 s boot limit and a 45 s overall deadline.
+   Before accepting a result it checks the effective policy and that the guest kernel matches the qualified one (6.12.109).
+4. A small runner inside the guest runs the code as UID 1000 with `no_new_privs` and rlimits on CPU, address space, file size, process count, file descriptors and core dumps. It runs `python3 -I` with stdin and stdout only.
+5. The sandbox is always deleted afterwards. An operator stop or run revocation kills the in-flight exec. Verification reruns the source in *another* fresh sandbox, and the host grader never imports agent code.
+
+`qualify-host` passed on the macOS dev machine (`reports/host-qualification.json`): UID 1000, `/etc` not writable, TCP egress to public and private addresses denied, DNS answered only with local 198.18.0.0/15 placeholders that are unreachable, a runaway loop stopped at 22.5 s, and no sandboxes left over. Cached cold start is about 2.4 s; delete about 5 s. This is one development host. A Linux/KVM production host, distinct service UIDs and kernel-hardening review are still open. libkrun has no jailer equivalent, so the host-side containment is weaker than Firecracker with the jailer, and OpenShell's VM driver is marked Experimental.
+
+## 7. Identity and credentials
+
+| Post | TeamLab |
+|---|---|
+| Gateway tags each request with the agent's identity from outside the sandbox | `Gateway.issue()` mints a `secrets.token_urlsafe(32)` per agent, held in tool closures. Identity fields in arguments stop the team |
+| Sandboxes hold no keys | `trusted-tools`: the runtime process holds `OPENAI_API_KEY`, and agents only see tools. `plane.py`: only the `model-proxy` process receives the key, the runtime gets a proxy token, and each service has a scrubbed environment and a peer-UID check. OpenShell guest: no credentials, no network |
+| No direct path between sandboxes | Workers have no messaging tool. Coordination happens only through board rows. The coordinator-to-worker "messages" are graph invocations recorded as `message.sent` events |
+| Every push and query logged | Every authorised action is journalled *before* dispatch and recorded as `action.authorized` and `action.committed` |
+
+Secrets are read from the environment (`config.py`). The monitor token for the dashboard is generated per launch by `scripts/dashboard.py` and is never `NEXT_PUBLIC_`.
+
+## 8. Real-time monitoring
+
+### Blocking path (enforcement)
+
+| Monitor | What it sees | Notes |
+|---|---|---|
+| `RuleMonitor` (`deterministic-rules-v1`) | Plan and note text | Regex for exfiltration, sandbox escape and monitoring-bypass wording. Supplementary only; the forbidden tools don't exist anyway |
+| `LunaMonitor(action)` (`luna-action-context-v1`) | Identity, exact action and arguments, trusted task state, last 12 events | Structured `ALLOW`/`BLOCK`/`PAUSE` JSON schema, `store=False`, 500 output tokens. Agent text is framed as untrusted data |
+| `LunaMonitor(contextual=True)` (`luna-team-context-v1`) | The same, plus the last 128 cross-agent events | Aimed at decomposition attacks spread across agents |
+
+Live mode runs all three. Replay and scripted modes run only `RuleMonitor`.
+
+**Block policy differs from the run in the post.** In the post's run, a block on a helper removed only that helper, and a block on the lead stopped the run. TeamLab follows the *stricter* policy the post describes for later runs: **any** `BLOCK` or capability violation stops the **whole team**. `PAUSE`, a timeout, an invalid verdict, an audit failure or an exhausted budget pauses the team. In both cases the pending action never runs. A person must then choose `restart`, which creates a clean **new** run with new tokens and a new epoch. It never resumes the old contexts.
+
+### Visibility path (no enforcement)
+
+`teamlab serve` starts the read-only API on `127.0.0.1:8765`: bearer-token authentication, rejection of any `Origin` header, `Content-Security-Policy: default-src 'none'`. It serves `/runs`, `/runs/<id>/snapshot`, `/runs/<id>/review` and `/runs/<id>/events`. The events endpoint is SSE that resumes from `Last-Event-ID`, with 25 s bounded connections and heartbeats.
+
+The Next.js dashboard (`dashboard/app/api/teamlab/[...path]/route.js`) proxies those endpoints. It allows only loopback hosts, rejects cross-site requests and validates the path, and the browser never sees the token. `teamlab monitor --run <id>` prints the same event feed to a terminal as JSON-escaped lines.
+
+```mermaid
+sequenceDiagram
+    participant W as Worker graph
+    participant G as Guard
+    participant GW as Gateway
+    participant M as Monitors
+    participant J as Journal/Archive
+    participant DB as Store (events)
+    participant UI as Dashboard (SSE)
+    W->>G: tool call (e.g. submit_task)
+    G->>GW: active(token)
+    W->>GW: call(token, action, args, handler)
+    GW->>GW: role capability + identity-arg check
+    GW->>M: evaluate(identity, action, args, context)
+    alt BLOCK
+        M-->>GW: BLOCK
+        GW->>DB: action.denied, run.stopped, epoch+1
+        DB-->>UI: stream stop event
+    else ALLOW
+        M-->>GW: ALLOW
+        GW->>J: append decision (fsync / Object Lock)
+        GW->>DB: lock run, re-check epoch, action.authorized, handler, action.committed
+        DB-->>UI: stream events
+    end
+```
+
+## 9. Offline monitoring
+
+After a run finishes or stops, there are two independent reviews.
+
+1. **Deterministic evidence review** (`review.py`; shown in the dashboard's *review* view):
+   - Re-verifies the whole `audit.jsonl` hash chain.
+   - For completed runs, re-validates the bundle (`manifest.json` hashes) and **recomputes the answer** with the reference grader.
+   - Checks that every `action.committed` has a matching `action.authorized` ("committed action provenance").
+   - Lists every `action.denied`, `run.paused`, `run.stopped` and `run.failed` event.
+2. **LLM behavioural review** (`teamlab review-behavior`, `behavior.py`, `observable-team-review-v1`):
+   - Slides 40-event windows with 8 events of overlap across *all* events.
+   - Attaches a full cross-agent index of notes, messages and authored source to every window. This plays the role of the post's "look up other agents' actions" affordance.
+   - Asks for findings in 8 categories (scope change, unauthorized communication, credentials, network, sandbox escape, monitor tampering, grader tampering, resource abuse).
+   - Rejects any finding whose `evidence` doesn't cite `seq` numbers present in the window, records coverage, and refuses to run over quota rather than silently skipping events.
+
+`teamlab evaluate-security` scores the frozen reviewer against versioned cases in `fixtures/security/` with fixed thresholds. This is the equivalent of the post's red-team sabotage evaluations. **Result:** recall was 0.0 on both development (0/4) and holdout (0/2), with 0 false positives. Both failed the `min_scenario_recall = 1.0` threshold. The post reports that monitors with CoT and inter-agent communication caught *all* sabotage in its evaluations. TeamLab's action-and-context monitor, which uses the same model family and has no CoT, did not.
+
+## 10. Budgets and limits
+
+| Limit | Post | TeamLab (where) |
+|---|---|---|
+| Wall time | 28.7 h, plus a restart with 12 h more | 20-minute run deadline (`controller.py`), 32 scheduler rounds (`collaborative.py`) |
+| Model calls | Not stated | `--model-call-limit` (default 100). Monitors count against it |
+| Tool calls | Not stated | `--tool-call-limit` (default 400) |
+| Money | Not stated | `SpendBudget`: explicit USD and per-million prices; reservations are never refunded |
+| Retries | Not stated | 2 attempts per task, then `BLOCKED` |
+| Board size | 5 s per statement, 256 MiB writes | 128 tasks, depth 8, 256 notes, 2,000 characters per note, 512 KB arguments. The Postgres adapter sets 5 s statement and lock timeouts; its `TEAMLAB_DATABASE_QUOTA_BYTES` check is **not** a true quota |
+| Compute per agent | VM per agent | Per execution: 1 vCPU, 1 GiB, 45 s (OpenShell microVM, dev-host qualified) |
+
+## 11. Human direction and stopping
+
+The post found that agents *gave up too early*. It used 19 time-remaining reminders and human encouragement to keep the lead going. TeamLab is built the other way round, following OpenAI's lessons about runaway persistence. Agents are told to stop and report `BLOCKED` or `NEEDS_INPUT`, retry counts are fixed, and the only human actions are `stop` and a reviewed `restart --reason`. `restart --checkpoint` can import a quiescent, round-boundary task snapshot (`recovery.py`) into a new run, as a rough analogue of the post's "restart from last save". Even then, model contexts start fresh, results are revalidated against the grader, and authored results must be re-executed in a fresh VM.
+
+## 12. Side-by-side summary
+
+| Dimension | Post (Fable 5.2) | TeamLab | Fidelity |
+|---|---|---|---|
+| Scale | 1,000 agents | ≤ 10 agents | Pattern only |
+| Coordination | Agents built their own on 5 SQL tables, via raw SQL | Fixed service-owned task tree; agents decompose with `split_task` | Close in shape, narrower in freedom |
+| Tools | Shell, editor, Git, SQL | Structured tools; code only through the broker | Deliberately narrower |
+| Sandbox | Persistent offline VM per agent, hardened kernel | Shared process (default); one disposable OpenShell microVM per execution (dev-host qualified) | **Gap** |
+| Gateway / identity | External, tags identity | `Gateway` with closure tokens and epochs; optional split control plane | Close |
+| Git | Per-agent branch, merge job | Controller-owned per-agent branches, merged only after verification | Close, stricter |
+| Real-time monitor | Fail-closed action classifier (CoT added later) | Rules + action + context classifiers, fail-closed, no CoT | Close in mechanism; weaker signal |
+| Block consequence | Helper removed; lead block stops run | Any block stops the whole team | Stricter |
+| Offline monitor | Same threat models over run records, cross-agent lookup | Windowed reviewer with a cross-agent index, evidence-cited findings, plus deterministic integrity checks | Close in design; **0.0 measured recall** |
+| Audit | Gateway logs | Pre-dispatch hash-chained journal, optional S3 Object Lock (MinIO-qualified only) | Close |
+| Correctness | Lean kernel checker | Independent SQL reference grader | Equivalent role |
+| Evidence | Proof landed on main | Replay runs correct across 1/2/4/8 workers; live 1-worker run incomplete | Not comparable |
+
+## 13. Where to go next
+
+The open gates, in the order `reports/IMPLEMENTATION_STATUS.md` gives them:
+
+1. Re-run the OpenShell qualification on a dedicated Linux/KVM host (`infra/README.md`). It has passed only on a macOS dev host, and execution is one VM per run, not a persistent VM per agent.
+2. Complete a 1-worker live collaborative run before scaling.
+3. Improve monitor recall: a different model family for monitors, longer cross-agent context, and fuller observable evidence.
+4. Move authorization and the coordination database out of the shared runtime, onto distinct UIDs.
+
+Then scale through 2 → 4 → 8 workers, but only on evidence. The replay benchmark already shows this workload *slows down* as orchestration is added: a median of 0.22 s with 1 worker against 0.87 s with 8.

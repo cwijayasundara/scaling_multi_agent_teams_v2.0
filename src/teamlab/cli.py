@@ -46,14 +46,14 @@ def execute(args):
     if args.workflow == 'authored' and args.mode != 'live':
         raise ValueError('authored workflow requires live source authoring; protocol doubles are test-only')
     broker = None
-    if args.execution_profile == "microvm":
-        if args.workflow != "authored" or not args.broker_socket:
-            raise ValueError("microVM authored workflow requires --broker-socket; no host execution fallback")
-        from .execution import UnixBroker
-        broker = UnixBroker(args.broker_socket)
+    if args.execution_profile == "openshell":
+        if args.workflow != "authored":
+            raise ValueError("the openshell execution profile is for the authored workflow; no host execution fallback")
+        from .execution import OpenShellBroker
+        broker = OpenShellBroker(gateway=args.openshell_gateway, **({'image': args.openshell_image} if args.openshell_image else {}))
         broker.preflight()
     elif args.workflow == "authored":
-        raise ValueError("authored workflow requires --execution-profile microvm")
+        raise ValueError("authored workflow requires --execution-profile openshell")
     if args.workflow != "fixed" and args.mode == "scripted":
         raise ValueError("collaborative workflows require sdk-replay or live mode")
     root = Path(args.root)
@@ -160,8 +160,9 @@ def parser():
         run.add_argument('--model-call-limit', type=int, default=100)
         run.add_argument('--tool-call-limit', type=int, default=400)
         run.add_argument("--workflow", choices=("fixed", "collaborative", "authored"), default="fixed")
-        run.add_argument("--broker-socket", help="Operator-provisioned Linux execution broker socket")
-        run.add_argument("--execution-profile", choices=("trusted-tools", "microvm"), default="trusted-tools")
+        run.add_argument("--execution-profile", choices=("trusted-tools", "openshell"), default="trusted-tools")
+        run.add_argument("--openshell-gateway", default="openshell", help="Registered OpenShell gateway running the vm compute driver")
+        run.add_argument("--openshell-image", help="Digest-pinned guest image; defaults to the qualified python:3.12-slim digest")
         run.add_argument('--control-plane', help='Private directory published by a separated control-plane supervisor')
         run.add_argument('--audit-endpoint', help='Loopback or HTTPS S3 endpoint; AWS is used when omitted')
         if command == "restart":
@@ -195,6 +196,7 @@ def parser():
     plane.add_argument('--audit-retention-days', type=int, default=30)
     qualify = sub.add_parser('qualify-host')
     qualify.add_argument('--output', default='reports/host-qualification.json')
+    qualify.add_argument('--openshell-gateway', default='openshell')
     audit = sub.add_parser("verify-audit")
     audit.add_argument("--root", default="runs/demo")
     attack = sub.add_parser("attack-demo")
@@ -239,7 +241,8 @@ def main(argv=None):
         load_local_secrets()
         if args.command == 'qualify-host':
             from .qualify import write_host_report
-            report = write_host_report(Path(args.output))
+            from .execution import OpenShellBroker
+            report = write_host_report(Path(args.output), OpenShellBroker(gateway=args.openshell_gateway))
             print(json.dumps(report, indent=2))
             return 0 if report['qualified'] else 2
         if args.command == 'plane':

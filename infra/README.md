@@ -1,20 +1,48 @@
-# Linux execution deployment
+# OpenShell execution deployment
 
-This repository includes a Firecracker/jailer broker and guest protocol. It has **not been qualified on Linux/KVM in this workspace**. macOS replay tests do not establish VM isolation, egress prevention or shutdown latency. Do not treat the deployment as production-ready.
+Authored calculations run only in disposable [OpenShell](https://github.com/NVIDIA/OpenShell) microVM sandboxes (`--execution-profile openshell`, `src/teamlab/execution.py`). OpenShell's `vm` compute driver uses libkrun on Hypervisor.framework (macOS, Apple Silicon) or KVM (Linux). There is no host-Python or container fallback. The controller never evaluates model source; it drives the `openshell` CLI with model, database and AWS credentials removed from the environment.
 
-The normal controller runs as an unprivileged runtime user. A separate privileged broker runs without model/database credentials and accepts only the configured runtime UID over a mode-0600 Unix socket. It launches a fresh offline microVM for each calculation and each verification rerun. This differs from the post's persistent per-agent VMs. Model source is never executed by the controller or broker host Python.
+For each calculation and each verification rerun, the runtime:
+
+1. creates a fresh sandbox from a digest-pinned image (default `python:3.12-slim@sha256:5e2bdb1b…`) with a pinned policy: no `network_policies` (all egress denied), Landlock `hard_requirement`, read-only system paths, read-write `/tmp` only, and no auto-attached providers;
+2. refuses to run unless the sandbox reports `Ready` with exactly that policy;
+3. sends the source and records over `sandbox exec` stdin to a fixed runner, which applies CPU, memory, file, process and descriptor limits and returns a single JSON candidate;
+4. rejects the result unless the guest kernel matches the qualified VM runtime (`6.12.109` for OpenShell `0.1.8`). A Docker or Podman gateway reports a different kernel and fails closed;
+5. deletes the sandbox, on success, failure, deadline (45 s) or operator stop.
+
+This is one VM per execution, not the post's persistent per-agent VM.
 
 ## Provisioning
 
-1. Use a dedicated Linux/KVM execution host with patched host/guest kernels, cgroup v2, Firecracker and its matching jailer. Follow the [production host guide](https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md) and [jailer documentation](https://github.com/firecracker-microvm/firecracker/blob/main/docs/jailer.md). Install audited binaries and record their hashes; the repository does not download executables.
-2. Prepare a minimal guest filesystem tree with `/bin/sh`, `mount` and `/usr/bin/python3` plus its standard library. Exclude host files, keys, cloud configuration, package proxies and credentials. Build it in a separate image-build environment using `python3 infra/build_guest.py --source-root /path/to/minimal-root --output /srv/teamlab/images/rootfs.ext4`. The helper strips setuid/setgid bits and known secret locations; it cannot establish that an arbitrary source tree is secret-free. Inventory the entire tree.
-3. Build or provision a compatible guest kernel with virtio block and virtio-vsock. Review its security configuration against the intended threat model; kernel hardening is an operator deployment requirement, not verified merely by a hash. The init mounts a bounded tmpfs and starts the fixed supervisor; calculation processes run as UID/GID 1000 with resource limits and no-new-privileges.
-4. Create separate non-root runtime and jail identities. Copy `broker.example.json` into root-owned configuration, fill in absolute paths, hashes and identities, and create a private root-owned state directory. Images and state must share a filesystem for read-only hard links. Create `/run/teamlab` outside runtime write access, allowing the runtime to traverse it. Keep Unix socket paths short enough for AF_UNIX limits.
-5. Start a dedicated root broker service with a clean environment: `PYTHONPATH=src python3 -m teamlab.execution --config /etc/teamlab/broker.json`. Broker Python needs only the standard library. Deploy source and its environment root-owned and unwritable by runtime users. Set service-level process/memory/connection limits. The client’s disconnect is cancellation: the service destroys its active guest, including guest subprocesses.
-6. Execute the opt-in boundary tests with `TEAMLAB_TEST_BROKER_SOCKET=/run/teamlab/execution.sock PYTHONPATH=src .venv/bin/python -m pytest tests/test_linux_execution.py -q`. Retain host process, cgroup and packet observations alongside results. Test runtime crash, operator stop during boot/execution, broker failure, malformed frames and repeated jobs. Inspect for leftover guest processes, cgroups and writable state. The suite checks selected properties, not every item in the production guide.
-7. Only after qualification, use `teamlab run --workflow authored --mode live --execution-profile microvm --broker-socket /run/teamlab/execution.sock` with the explicit spend flags described in the README.
+1. Install a pinned OpenShell release. The upstream installer verifies release checksums and, on macOS, installs a Homebrew formula and a `brew services` gateway. Review the script before running it:
+   ```shell
+   curl -fsSL https://raw.githubusercontent.com/NVIDIA/OpenShell/v0.1.8/install.sh -o install.sh
+   OPENSHELL_VERSION=v0.1.8 sh install.sh
+   ```
+   On macOS the VM driver also needs `e2fsprogs` (`brew install e2fsprogs`).
+2. Select the VM driver; it is never auto-detected. On macOS, edit `$(brew --prefix)/var/openshell/gateway.toml` (or `~/.config/openshell/gateway.toml`, which takes precedence). On Linux, edit `~/.config/openshell/gateway.toml`:
+   ```toml
+   [openshell]
+   version = 2
 
-No VM network interfaces are configured. Vsock serves one bounded request/result exchange, with no generic destination forwarding. The [transport protocol](https://github.com/firecracker-microvm/firecracker/blob/main/docs/vsock.md) is a length-prefixed JSON frame following Firecracker's host-initiated `CONNECT 5252` handshake. The guest only implements calculation execution; it has no SQL, Git, provider or management access.
+   [openshell.gateway]
+   compute_driver = "vm"
+
+   [openshell.drivers.vm]
+   vcpus = 1
+   mem_mib = 1024
+   ```
+   Restart the gateway (`brew services restart openshell` or `systemctl --user restart openshell-gateway`). Sizing is gateway-wide; the VM driver ignores per-sandbox `--cpu`/`--memory`. Keep `allow_driver_config` and `enable_bind_mounts` off: libkrun does not confine a compromised guest kernel to a mounted directory.
+3. Run the gateway as a user that holds no model, database or archive credentials. libkrun has no jailer equivalent, so the gateway user's file permissions bound what a VM escape could reach.
+4. Qualify the host. This runs real guests and writes `reports/host-qualification.json`. It exits 0 only when every check passes:
+   ```shell
+   PYTHONPATH=src .venv/bin/python -m teamlab qualify-host
+   TEAMLAB_TEST_OPENSHELL=1 PYTHONPATH=src .venv/bin/python -m pytest tests/test_openshell_execution.py -q
+   ```
+   Checks: gateway connected at the pinned version; guest runs as UID 1000 with read-only `/etc`; TCP egress to public and private addresses denied; DNS answered only with local `198.18.0.0/15` placeholders (a random nonexistent name gets one too, so no upstream lookup), and those placeholders are unreachable; a runaway loop terminates; no sandboxes are left behind; operator stop cancels an in-flight guest within 3 s.
+5. Only after qualification, run `teamlab run --workflow authored --mode live --execution-profile openshell` with the explicit spend flags described in the README. Use `--openshell-gateway` for a non-default gateway name and `--openshell-image` for another digest-pinned image.
+
+Re-run step 4 after any OpenShell upgrade, image change or gateway configuration change. A new OpenShell release changes `OPENSHELL_VERSION` and `EXPECTED_GUEST_KERNEL` in `execution.py`; update both only after qualification passes. The VM driver is marked Experimental upstream. Qualification records selected properties of one host. It is not a production audit, kernel-hardening review or remote attestation.
 
 ## Coordination and remaining separation
 
@@ -25,5 +53,3 @@ Set `TEAMLAB_DATABASE_URL` to use the optional PostgreSQL adapter (`pip install 
 ## External audit decisions
 
 Install `.[audit]` for the gateway service and provision a versioned Object Lock bucket with a narrowly scoped writer identity outside guest access. Use a control-plane supervisor started with `--audit-bucket BUCKET --audit-endpoint ENDPOINT`, and start the runtime with `--control-plane DIR --require-external-audit`. The adapter checks Object Lock is enabled, then requests COMPLIANCE retention and checksum protection for each pre-dispatch decision. It requires a version ID receipt and refuses dispatch on failures. The writer policy must permit the lock, checksum, and encryption operations while preventing deletion or policy changes. A loopback MinIO check passed those adapter behaviors and is recorded in [reports/object-lock-qualification.json](../reports/object-lock-qualification.json). It is not AWS IAM or cloud immutability. Local mocked S3 tests also cannot establish cloud immutability. No bucket is created by the CLI. See the [S3 put-object reference](https://docs.aws.amazon.com/boto3/latest/reference/services/s3/client/put_object.html).
-
-The root broker can be managed with the supplied `teamlab-broker.service` template. Review paths, resource sizing and host policy before installing it. Its control-group kill policy is required to avoid VM descendants surviving service termination. This template is not installed by repository commands.

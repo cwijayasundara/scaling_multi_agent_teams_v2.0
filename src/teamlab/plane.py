@@ -15,6 +15,7 @@ import re
 import secrets
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -28,12 +29,34 @@ from pathlib import Path
 from .analytics import canonical
 from .archive import DirectoryArchive, configured_archive
 from .artifacts import commit_verified_source
-from .execution import receive_frame, send_frame
 from .grader import grade
 from .security import SecurityError
 
 FOREIGN = ('OPENAI_API_KEY', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'TEAMLAB_DATABASE_URL')
 SERVICES = ('grader', 'integration', 'gateway', 'model-proxy')
+MAX_FRAME = 32 * 1024 * 1024
+
+
+def send_frame(sock, payload):
+    data = canonical(payload).encode()
+    if len(data) > MAX_FRAME:
+        raise SecurityError('frame exceeds quota')
+    sock.sendall(struct.pack('!I', len(data)) + data)
+
+
+def receive_frame(sock):
+    def exact(n):
+        out = bytearray()
+        while len(out) < n:
+            part = sock.recv(min(n-len(out), 65536))
+            if not part:
+                raise SecurityError('peer disconnected')
+            out.extend(part)
+        return bytes(out)
+    size = struct.unpack('!I', exact(4))[0]
+    if size > MAX_FRAME:
+        raise SecurityError('frame exceeds quota')
+    return json.loads(exact(size))
 
 
 def peer_uid(sock):

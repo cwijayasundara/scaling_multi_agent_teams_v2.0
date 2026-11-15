@@ -16,7 +16,8 @@ from teamlab.board import Board
 from teamlab.cli import main, validate_bundle
 from teamlab.collaborative import CollaborativeTeam
 from teamlab.controller import Controller
-from teamlab.execution import receive_frame, send_frame, validate_config
+from teamlab.execution import OpenShellBroker
+from teamlab.plane import receive_frame, send_frame
 from teamlab.fixture import generate
 from teamlab.recovery import Checkpoints, DurableSaver
 from teamlab.security import SecurityError, RunStopped
@@ -243,10 +244,21 @@ def test_framing_rejects_oversized_and_truncated_messages():
         with pytest.raises(SecurityError,match='disconnected'):receive_frame(b)
 
 
-def test_broker_preflight_does_not_accept_macos_or_missing_kvm():
-    import platform,os
-    if platform.system()!='Linux' or os.geteuid()!=0 or not os.access('/dev/kvm',os.R_OK|os.W_OK):
-        with pytest.raises(SecurityError,match='Linux/KVM'):validate_config({})
+def test_openshell_broker_requires_digest_pinned_image_and_cli():
+    with pytest.raises(SecurityError,match='digest'):OpenShellBroker(image='python:3.12-slim')
+    with pytest.raises(SecurityError,match='openshell CLI'):OpenShellBroker(cli='').preflight()
+
+
+def test_openshell_broker_rejects_wrong_gateway_version_and_unpinned_kernel(tmp_path,monkeypatch):
+    import teamlab.execution as ex
+    fake=tmp_path/'openshell'
+    fake.write_text('#!/bin/sh\necho \'{"status":"connected","version":"0.0.1"}\'\n');fake.chmod(0o755)
+    with pytest.raises(SecurityError,match='pinned version'):OpenShellBroker(cli=str(fake)).preflight()
+    b=OpenShellBroker(cli=str(fake))
+    monkeypatch.setattr(b,'_create',lambda *a:None);monkeypatch.setattr(b,'_await_ready',lambda *a:None);monkeypatch.setattr(b,'_delete',lambda *a:None)
+    fake.write_text('#!/bin/sh\ncat >/dev/null; echo \'{"ok":true,"candidate":{},"kernel":"6.10.14-linuxkit"}\'\n')
+    gw=SimpleNamespace(active=lambda t:SimpleNamespace(run_id='r',agent_id='a',epoch=0))
+    with pytest.raises(SecurityError,match='kernel'):b.execute(gw,'t','pass',[])
 
 
 def test_behavior_review_correlates_notes_and_rejects_invented_evidence():

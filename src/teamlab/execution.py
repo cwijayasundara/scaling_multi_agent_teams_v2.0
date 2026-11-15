@@ -1,261 +1,212 @@
-"""Offline Firecracker execution over an operator-provisioned Unix broker.
+"""Authored-code execution in disposable OpenShell microVM sandboxes.
 
-The client holds run authority; the privileged service has no model credentials.
-No local subprocess ever evaluates model source. See infra/README.md for the
-Linux deployment and its mandatory qualification gate.
+Each execution (and each verification rerun) gets a fresh OpenShell sandbox
+created on a gateway whose compute driver is ``vm`` (libkrun on
+Hypervisor.framework or KVM). The sandbox has no network interface, a deny-all
+network policy, a hard Landlock requirement, and is deleted afterwards. The
+runtime process never evaluates model source itself; it only drives the
+``openshell`` CLI with a scrubbed environment. See infra/README.md.
 """
-import argparse
-import hashlib
 import json
 import os
-import platform
 import shutil
-import signal
-import socket
-import struct
 import subprocess
 import tempfile
 import threading
 import time
-from pathlib import Path
+import uuid
 
-from .analytics import canonical, digest
 from .security import SecurityError
 
-MAX_FRAME = 32 * 1024 * 1024
+# Pinned together: a gateway upgrade must re-run `teamlab qualify-host`.
+OPENSHELL_VERSION = '0.1.8'
+EXPECTED_GUEST_KERNEL = '6.12.109'
+DEFAULT_IMAGE = ('docker.io/library/python:3.12-slim@sha256:'
+                 '5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b')
+MAX_PAYLOAD = 32 * 1024 * 1024
+MAX_OUTPUT = 16 * 1024 * 1024
+BOOT_SECONDS = 30
+EXEC_SECONDS = 30
+DEADLINE_SECONDS = 45
+SCRUBBED_ENV = ('OPENAI_API_KEY', 'TEAMLAB_DATABASE_URL', 'AWS_ACCESS_KEY_ID',
+                'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN')
+
+# No network_policies: OpenShell denies all egress. hard_requirement makes the
+# sandbox fail to start rather than run without Landlock.
+POLICY = """version: 1
+filesystem_policy:
+  include_workdir: false
+  read_only: [/bin, /usr, /lib, /etc, /proc, /dev/urandom]
+  read_write: [/tmp, /dev/null]
+landlock:
+  compatibility: hard_requirement
+"""
+
+# Runs inside the guest as the unprivileged sandbox user. One request per VM.
+RUNNER = r'''
+import ctypes, json, os, resource, signal, subprocess, sys, tempfile
+MAX_OUTPUT = 16*1024*1024
+def restrict():
+    ctypes.CDLL(None).prctl(38, 1, 0, 0, 0)  # PR_SET_NO_NEW_PRIVS
+    for kind, limit in ((resource.RLIMIT_CPU, 20), (resource.RLIMIT_AS, 512*1024*1024),
+            (resource.RLIMIT_FSIZE, MAX_OUTPUT), (resource.RLIMIT_NPROC, 64),
+            (resource.RLIMIT_NOFILE, 32), (resource.RLIMIT_CORE, 0)):
+        resource.setrlimit(kind, (limit, limit))
+result = {'ok': False, 'reason': 'guest execution failed', 'kernel': os.uname().release}
+try:
+    request = json.loads(sys.stdin.buffer.read())
+    if len(request['source'].encode()) > 64000:
+        raise ValueError('source too large')
+    with tempfile.TemporaryDirectory(dir='/tmp') as directory:
+        source = os.path.join(directory, 'calculation.py')
+        with open(source, 'w') as stream:
+            stream.write(request['source'])
+        os.chmod(source, 0o444)
+        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+            proc = subprocess.Popen([sys.executable, '-I', source], cwd=directory,
+                env={'PATH': '/usr/local/bin:/usr/bin:/bin', 'PYTHONDONTWRITEBYTECODE': '1'},
+                stdin=subprocess.PIPE, stdout=out, stderr=err, preexec_fn=restrict, start_new_session=True)
+            try:
+                proc.communicate(json.dumps({'records': request['records']}).encode(), timeout=25)
+            finally:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except OSError:  # exited group: ESRCH, or EPERM under OpenShell seccomp
+                    pass
+                proc.wait()
+            if proc.returncode != 0:
+                raise ValueError('calculation failed')
+            out.seek(0)
+            data = out.read(MAX_OUTPUT+1)
+            if len(data) > MAX_OUTPUT:
+                raise ValueError('output exceeds quota')
+            candidate = json.loads(data)
+            if not isinstance(candidate, dict):
+                raise ValueError('candidate object required')
+            result = {'ok': True, 'candidate': candidate, 'kernel': os.uname().release}
+except Exception:
+    pass
+sys.stdout.write(json.dumps(result, allow_nan=False))
+'''
 
 
-def send_frame(sock, payload):
-    data = canonical(payload).encode()
-    if len(data) > MAX_FRAME:
-        raise SecurityError('broker frame exceeds quota')
-    sock.sendall(struct.pack('!I', len(data)) + data)
+def _env():
+    return {k: v for k, v in os.environ.items() if k not in SCRUBBED_ENV}
 
 
-def receive_frame(sock):
-    def exact(n):
-        out = bytearray()
-        while len(out) < n:
-            part = sock.recv(min(n-len(out), 65536))
-            if not part:
-                raise SecurityError('broker disconnected')
-            out.extend(part)
-        return bytes(out)
-    size = struct.unpack('!I', exact(4))[0]
-    if size > MAX_FRAME:
-        raise SecurityError('broker frame exceeds quota')
-    return json.loads(exact(size))
+class OpenShellBroker:
+    """Same interface as the earlier broker: profile, preflight(), execute()."""
+    profile = 'openshell-vm-v1'
 
+    def __init__(self, gateway='openshell', image=DEFAULT_IMAGE, workspace='default',
+                 expected_kernel=EXPECTED_GUEST_KERNEL, cli=None):
+        if '@sha256:' not in image:
+            raise SecurityError('OpenShell guest image must be pinned by digest')
+        self.gateway, self.image, self.workspace = gateway, image, workspace
+        self.expected_kernel = expected_kernel
+        self.cli = shutil.which('openshell') if cli is None else cli
 
-class UnixBroker:
-    profile = 'firecracker-jailer-unix-v1'
-
-    def __init__(self, path):
-        self.path = str(path)
+    def _run(self, *args, timeout=30, stdin=None):
+        if not self.cli:
+            raise SecurityError('openshell CLI not found; install OpenShell (infra/README.md)')
+        return subprocess.run([self.cli, *args, '-g', self.gateway, '--workspace', self.workspace],
+            input=stdin, capture_output=True, timeout=timeout, env=_env())
 
     def preflight(self):
-        with socket.socket(socket.AF_UNIX) as sock:
-            sock.settimeout(5)
-            sock.connect(self.path)
-            send_frame(sock, {'operation': 'health'})
-            result = receive_frame(sock)
-        if result.get('profile') != self.profile or result.get('network_interfaces') != 0 or not result.get('ready'):
-            raise SecurityError('execution broker preflight failed')
-        return result
+        done = self._run('status', '-o', 'json', timeout=10)
+        try:
+            status = json.loads(done.stdout)
+        except ValueError:
+            raise SecurityError('OpenShell gateway unreachable') from None
+        if status.get('status') != 'connected' or status.get('version') != OPENSHELL_VERSION:
+            raise SecurityError(f'OpenShell gateway must be connected and at pinned version {OPENSHELL_VERSION}')
+        return {'ready': True, 'profile': self.profile, 'gateway_version': status['version']}
+
+    def _sandbox(self, name):
+        done = self._run('sandbox', 'get', name, '-o', 'json', timeout=10)
+        return json.loads(done.stdout) if done.returncode == 0 else None
+
+    def _delete(self, name):
+        # Fire-and-forget so cancellation returns promptly; reaped in background.
+        try:
+            proc = subprocess.Popen([self.cli, 'sandbox', 'delete', name, '-g', self.gateway, '--workspace', self.workspace],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=_env())
+            threading.Thread(target=proc.wait, daemon=True).start()
+        except OSError:
+            pass
+
+    def _create(self, name, who):
+        with tempfile.NamedTemporaryFile('w', suffix='.yaml', delete=False) as policy:
+            policy.write(POLICY)
+        try:
+            done = self._run('sandbox', 'create', '--name', name, '--from', self.image, '--policy', policy.name,
+                '--no-auto-providers', '--no-tty', '--detach', '--restart-policy', 'never',
+                '--label', f'teamlab.run={who.run_id}', '--label', f'teamlab.agent={who.agent_id}', timeout=BOOT_SECONDS)
+        finally:
+            os.unlink(policy.name)
+        if done.returncode != 0:
+            raise SecurityError('OpenShell sandbox creation failed')
+
+    def _await_ready(self, gateway, token, name, deadline):
+        while True:
+            gateway.active(token)
+            if time.monotonic() > deadline:
+                raise SecurityError('OpenShell sandbox boot deadline exceeded')
+            state = self._sandbox(name)
+            phase = (state or {}).get('phase')
+            if phase == 'Ready':
+                policy = state.get('policy') or {}
+                if policy.get('network_policies') or (policy.get('landlock') or {}).get('compatibility') != 'hard_requirement':
+                    raise SecurityError('OpenShell sandbox policy is not the pinned deny-all policy')
+                return
+            if phase in ('Error', 'Failed', 'Deleting'):
+                raise SecurityError('OpenShell sandbox failed to provision')
+            time.sleep(.2)
 
     def execute(self, gateway, token, source, records):
         who = gateway.active(token)
-        self.preflight()
-        with socket.socket(socket.AF_UNIX) as sock:
-            sock.settimeout(2)
-            sock.connect(self.path)
-            send_frame(sock, {'operation': 'execute', 'source': source, 'records': records,
-                'source_hash': hashlib.sha256(source.encode()).hexdigest(), 'input_hash': digest(records),
-                'run_id': who.run_id, 'agent_id': who.agent_id, 'epoch': who.epoch})
-            output, error = [], []
-            def receive():
-                try:
-                    sock.settimeout(45)
-                    output.append(receive_frame(sock))
-                except BaseException as exc:
-                    error.append(exc)
-            thread = threading.Thread(target=receive, daemon=True)
-            thread.start()
-            deadline = time.monotonic()+45
-            try:
-                while thread.is_alive():
+        payload = json.dumps({'source': source, 'records': records}).encode()
+        if len(payload) > MAX_PAYLOAD:
+            raise SecurityError('execution payload exceeds quota')
+        name = 'tl-' + uuid.uuid4().hex[:16]
+        started = time.monotonic()
+        deadline = started + DEADLINE_SECONDS
+        proc = None
+        try:
+            self._create(name, who)
+            self._await_ready(gateway, token, name, started + BOOT_SECONDS)
+            with tempfile.TemporaryFile() as out:
+                proc = subprocess.Popen([self.cli, 'sandbox', 'exec', '-n', name, '-g', self.gateway, '--workspace', self.workspace,
+                    '--no-tty', '--no-login-shell', '--timeout', str(EXEC_SECONDS), '--', 'python3', '-I', '-c', RUNNER],
+                    stdin=subprocess.PIPE, stdout=out, stderr=subprocess.DEVNULL, env=_env(), start_new_session=True)
+                writer = threading.Thread(target=self._feed, args=(proc, payload), daemon=True)
+                writer.start()
+                while proc.poll() is None:
                     gateway.active(token)
                     if time.monotonic() > deadline:
                         raise SecurityError('execution deadline exceeded')
-                    thread.join(.05)
+                    time.sleep(.05)
                 gateway.active(token)
-                if error:
-                    raise SecurityError('execution broker failed') from error[0]
-                result = output[0]
-                if not result.get('ok') or result.get('source_hash') != hashlib.sha256(source.encode()).hexdigest() or result.get('input_hash') != digest(records):
-                    raise SecurityError('isolated execution failed or returned mismatched provenance')
-                return result['candidate']
-            finally:
-                # Service monitors disconnect independently and destroys the VM.
-                try:
-                    sock.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
-
-
-def validate_config(config):
-    if platform.system() != 'Linux' or os.geteuid() != 0 or not os.access('/dev/kvm', os.R_OK | os.W_OK):
-        raise SecurityError('broker requires a dedicated privileged Linux/KVM service')
-    for name in ('kernel', 'rootfs', 'firecracker', 'jailer'):
-        path = Path(config[name])
-        stat = path.lstat()
-        if not path.is_absolute() or not path.is_file() or path.is_symlink() or stat.st_uid != 0 or stat.st_mode & 0o022:
-            raise SecurityError('broker images/binaries must be root-owned regular immutable files')
-        if hashlib.sha256(path.read_bytes()).hexdigest() != config[name+'_sha256']:
-            raise SecurityError('broker image/binary hash mismatch: '+name)
-    if config['guest_uid'] <= 0 or config['guest_gid'] <= 0 or config['allowed_uid'] <= 0 or config['guest_uid'] == config['allowed_uid']:
-        raise SecurityError('unprivileged guest and runtime identities required')
-    if not 1 <= config.get('concurrency', 4) <= 8:
-        raise SecurityError('broker concurrency outside qualified range')
-    base = Path(config['state_dir'])
-    base.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if base.is_symlink() or base.stat().st_uid != 0 or base.stat().st_mode & 0o077:
-        raise SecurityError('private root-owned broker state directory required')
-
-
-def launch(config, request, client):
-    source, records = request['source'], request['records']
-    if not isinstance(source, str) or len(source.encode()) > 64_000 or not isinstance(records, list):
-        raise SecurityError('invalid execution request')
-    if hashlib.sha256(source.encode()).hexdigest() != request['source_hash'] or digest(records) != request['input_hash']:
-        raise SecurityError('execution request hash mismatch')
-    ident = 'job-'+os.urandom(12).hex()
-    base = Path(config['state_dir'])
-    # Jailer creates this conventional chroot layout itself when launched.
-    root = base / Path(config['firecracker']).name / ident / 'root'
-    root.mkdir(parents=True, mode=0o700)
-    proc = None
-    started = time.monotonic()
-    try:
-        for name in ('kernel', 'rootfs'):
-            os.link(config[name], root / name)
-        vm = {'boot-source': {'kernel_image_path': '/kernel', 'boot_args': 'console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro init=/sbin/teamlab-init'},
-            'drives': [{'drive_id': 'rootfs', 'path_on_host': '/rootfs', 'is_root_device': True, 'is_read_only': True}],
-            'machine-config': {'vcpu_count': 1, 'mem_size_mib': 1024},
-            'vsock': {'guest_cid': 3, 'uds_path': '/guest.vsock'}}
-        (root / 'vm.json').write_text(canonical(vm))
-        for path in (root, root/'kernel', root/'rootfs', root/'vm.json'):
-            # The dedicated jail UID can read but cannot change image contents.
-            if path == root:
-                os.chown(path, config['guest_uid'], config['guest_gid'])
-            else:
-                path.chmod(0o444)
-        cmd = [config['jailer'], '--id', ident, '--exec-file', config['firecracker'], '--uid', str(config['guest_uid']), '--gid', str(config['guest_gid']),
-            '--chroot-base-dir', str(base), '--cgroup-version', '2', '--cgroup', 'memory.max=1342177280', '--cgroup', 'pids.max=64',
-            '--cgroup', 'cpu.max=100000 100000', '--', '--no-api', '--config-file', '/vm.json']
-        # No inherited API keys, tracing settings or service credentials.
-        proc = subprocess.Popen(cmd, env={'PATH': os.defpath}, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-        guest = None
-        while time.monotonic()-started < 10:
-            if proc.poll() is not None:
-                raise SecurityError('microVM exited during boot')
-            candidate = socket.socket(socket.AF_UNIX)
-            candidate.settimeout(.5)
+                out.seek(0)
+                data = out.read(MAX_OUTPUT * 2)
             try:
-                candidate.connect(str(root / 'guest.vsock'))
-                candidate.sendall(b'CONNECT 5252\n')
-                ack = bytearray()
-                while not ack.endswith(b'\n') and len(ack) < 64:
-                    chunk = candidate.recv(1)
-                    if not chunk:
-                        break
-                    ack.extend(chunk)
-                if ack.startswith(b'OK ') and ack.endswith(b'\n'):
-                    guest = candidate
-                    break
-            except (OSError, SecurityError):
-                pass
-            candidate.close()
-            time.sleep(.05)
-        if guest is None:
-            raise SecurityError('microVM boot deadline exceeded')
-        with guest:
-            guest.settimeout(35)
-            send_frame(guest, {'source': source, 'records': records})
-            output, errors = [], []
-            def receive():
-                try:
-                    output.append(receive_frame(guest))
-                except BaseException as exc:
-                    errors.append(exc)
-            thread = threading.Thread(target=receive, daemon=True)
-            thread.start()
-            while thread.is_alive():
-                import select
-                readable, _, _ = select.select([client], [], [], .05)
-                if readable and client.recv(1, socket.MSG_PEEK) == b'':
-                    raise SecurityError('runtime disconnected; revoke execution')
-                if time.monotonic()-started > 40:
-                    raise SecurityError('microVM deadline exceeded')
-            if errors or not output or not output[0].get('ok'):
-                raise SecurityError('guest execution failed')
-            return {**output[0], 'source_hash': request['source_hash'], 'input_hash': request['input_hash'], 'elapsed_seconds': time.monotonic()-started}
-    finally:
-        if proc:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            proc.wait(timeout=5)
-        shutil.rmtree(root.parent, ignore_errors=True)
-
-
-def serve(config):
-    validate_config(config)
-    if any(name in os.environ for name in ('OPENAI_API_KEY', 'TEAMLAB_DATABASE_URL')):
-        raise SecurityError('execution service must not inherit model/database credentials')
-    path = Path(config['socket'])
-    if path.exists():
-        raise SecurityError('broker socket already exists; operator must resolve stale service')
-    semaphore = threading.BoundedSemaphore(config.get('concurrency', 4))
-    def handle(client):
-        with client:
-            try:
-                _, uid, _ = struct.unpack('3i', client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
-                if uid != config['allowed_uid']:
-                    raise SecurityError('broker peer identity rejected')
-                client.settimeout(5)
-                request = receive_frame(client)
-                if request['operation'] == 'health':
-                    send_frame(client, {'ready': True, 'profile': UnixBroker.profile, 'network_interfaces': 0,
-                        'kernel_sha256': config['kernel_sha256'], 'rootfs_sha256': config['rootfs_sha256']})
-                    return
-                if request['operation'] != 'execute' or not semaphore.acquire(blocking=False):
-                    raise SecurityError('broker unavailable or invalid operation')
-                try:
-                    send_frame(client, launch(config, request, client))
-                finally:
-                    semaphore.release()
-            except Exception:
-                try:
-                    send_frame(client, {'ok': False, 'reason': 'broker refused or failed execution'})
-                except OSError:
-                    pass
-    with socket.socket(socket.AF_UNIX) as server:
-        server.bind(str(path))
-        os.chown(path, config['allowed_uid'], -1)
-        path.chmod(0o600)
-        server.listen(16)
-        try:
-            while True:
-                client, _ = server.accept()
-                threading.Thread(target=handle, args=(client,), daemon=True).start()
+                result = json.loads(data)
+            except ValueError:
+                raise SecurityError('isolated execution returned no result') from None
+            if result.get('kernel') != self.expected_kernel:
+                raise SecurityError('guest kernel does not match the qualified OpenShell VM runtime')
+            if not result.get('ok'):
+                raise SecurityError('isolated execution failed')
+            return result['candidate']
         finally:
-            path.unlink(missing_ok=True)
+            if proc and proc.poll() is None:
+                proc.kill()
+            self._delete(name)
 
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config', required=True)
-    args = parser.parse_args()
-    serve(json.loads(Path(args.config).read_text()))
+    @staticmethod
+    def _feed(proc, payload):
+        try:
+            proc.stdin.write(payload)
+            proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
