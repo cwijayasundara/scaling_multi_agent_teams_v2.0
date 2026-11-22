@@ -7,7 +7,9 @@ measured from the store and journal, never from what the scenario expected.
 import json
 import os
 import shutil
+import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import mkdtemp
@@ -38,16 +40,42 @@ SLOW = frozenset(s["id"] for s in load_catalogue()["scenarios"] if s.get("slow")
 
 
 class _Clock:
-    """A time.time stand-in that scenarios advance; patched in with unittest.mock."""
+    """A frozen time.time stand-in that scenarios advance; installed with _thread_clock."""
 
-    def __init__(self):
-        self.base, self.offset = time.time(), 0.0
+    def __init__(self, start: float | None = None):
+        self.base, self.offset = time.time() if start is None else start, 0.0
 
     def advance(self, seconds: float):
         self.offset += seconds
 
     def __call__(self):
         return self.base + self.offset
+
+
+_real_time = time.time
+_thread_clocks: dict[int, Callable[[], float]] = {}
+_clock_lock = threading.Lock()
+
+
+def _scoped_time() -> float:
+    return _thread_clocks.get(threading.get_ident(), _real_time)()
+
+
+@contextmanager
+def _thread_clock(clock: Callable[[], float]):
+    """Make time.time read clock in the calling thread only; other threads (concurrent drills) keep real time."""
+    ident = threading.get_ident()
+    with _clock_lock:
+        if not _thread_clocks:
+            time.time = _scoped_time
+        _thread_clocks[ident] = clock
+    try:
+        yield clock
+    finally:
+        with _clock_lock:
+            del _thread_clocks[ident]
+            if not _thread_clocks:
+                time.time = _real_time
 
 
 def _rewrite_journal(path: Path, mutate: Callable[[dict], None], index: int = 2) -> int:
@@ -166,10 +194,12 @@ def forged_request_signature(root: Path) -> dict:
 
 
 def stolen_bearer_token(root: Path) -> dict:
-    c = _controller(root)
-    cred = c.worker_tokens[0]
-    clock = _Clock()
-    with patch("time.time", clock):
+    # The run starts 301 s in the past, so the jump past the credential lifetime lands on the present:
+    # alerts are not stamped in the future, and a later acknowledgement on the real clock gives a real dwell.
+    clock = _Clock(time.time() - 301)
+    with _thread_clock(clock):
+        c = _controller(root)
+        cred = c.worker_tokens[0]
         thief = new_credential(cred.agent_id, cred.token, cred.expires_at)  # same bearer string, different key
         clock.advance(301)  # past the five-minute credential lifetime
         start, started = _last_seq(c), time.time()

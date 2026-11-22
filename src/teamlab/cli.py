@@ -235,6 +235,9 @@ def parser():
     suite.add_argument("--root", default="runs/attack-suite")
     suite.add_argument("--output", default="reports/threat-coverage.json")
     suite.add_argument("--include-slow", action="store_true", help="Also run scenarios that spawn control-plane processes")
+    tabletop = sub.add_parser("tabletop", help="Run five attack incidents concurrently, each in its own root; print fleet dwell and coverage")
+    tabletop.add_argument("--root", default="runs/tabletop")
+    tabletop.add_argument("--ack-after", type=float, metavar="SECONDS", help="Acknowledge every open alert as 'tabletop' after this delay")
     triage = sub.add_parser("triage", help="Record first-pass dispositions for a run's alerts; never changes run state")
     budget_options(triage)
     triage.add_argument("--root", required=True)
@@ -494,6 +497,9 @@ def main(argv=None):
             output.write_text(json.dumps(report, indent=2) + "\n")
             output.with_suffix(".md").write_text(render_matrix(report, load_catalogue()))
             print(json.dumps(report["summary"], indent=2))
+        elif args.command == "tabletop":
+            from .tabletop import run_tabletop
+            print(json.dumps(run_tabletop(Path(args.root), acknowledge_after_s=args.ack_after), indent=2))
         elif args.command == "attack-demo":
             root = Path(args.root)
             generate(root / "input.csv", rows=100)
