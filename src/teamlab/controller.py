@@ -221,11 +221,13 @@ class Controller:
             keys = [dict(r) for r in db.execute('SELECT agent_id,role,key_id,public_key FROM agent_keys WHERE run_id=? ORDER BY created,agent_id', (self.run_id,))]
         (out / "agents.json").write_text(canonical(keys) + "\n")
         from . import dlp
-        summaries, redacted_files = {}, []
+        summaries, redacted_files, summary_hits = {}, [], []
         for name, text in self.model_summaries.items():
             summaries[name], hits = dlp.redact(text)
-            if hits and "model_summaries.json" not in redacted_files:
-                redacted_files.append("model_summaries.json")
+            if hits:
+                summary_hits.extend(hits)
+                if "model_summaries.json" not in redacted_files:
+                    redacted_files.append("model_summaries.json")
         (out / "model_summaries.json").write_text(json.dumps(summaries, indent=2) + "\n")
         # input.csv is operator data; sources.json is hash-bound. Neither is scanned.
         findings = []
@@ -233,7 +235,9 @@ class Controller:
             if not path.is_file() or path.name in ("input.csv", "sources.json", "manifest.json"):
                 continue
             counts: dict[str, int] = {}
-            for hit in dlp.scan(path.read_text(errors="replace")):
+            # Findings for redacted summaries come from the pre-redaction scan.
+            hits = summary_hits if path.name == "model_summaries.json" else dlp.scan(path.read_text(errors="replace"))
+            for hit in hits:
                 counts[hit["kind"]] = counts.get(hit["kind"], 0) + 1
             findings.extend({"file": path.name, "kind": kind, "count": count} for kind, count in sorted(counts.items()))
         report = {"filter": "output-filter-v1", "findings": findings, "redacted_files": redacted_files}

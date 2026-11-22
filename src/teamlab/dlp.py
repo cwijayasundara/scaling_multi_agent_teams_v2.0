@@ -16,6 +16,7 @@ _PATTERNS = {
     "jwt": re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),
     "email": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
 }
+_PEM_END = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
 _MIN_SECRET_LENGTH = 16
 
 
@@ -38,13 +39,22 @@ def scan(text: str) -> list[dict]:
 
 def redact(text: str) -> tuple[str, list[dict]]:
     findings = scan(text)
-    pieces, position = [], 0
+    spans: list[list] = []
     for finding in findings:
-        if finding["start"] < position:  # Overlapping match already covered.
-            continue
-        pieces.append(text[position:finding["start"]])
-        pieces.append(f"[REDACTED:{finding['kind']}]")
-        position = finding["end"]
+        start, end = finding["start"], finding["end"]
+        if finding["kind"] == "private_key":
+            # Detection is the header; redaction covers the whole PEM block.
+            match = _PEM_END.search(text, end)
+            end = match.end() if match else len(text)
+        if spans and start < spans[-1][1]:  # Overlap: merge so no fragment survives.
+            spans[-1][1] = max(spans[-1][1], end)
+        else:
+            spans.append([start, end, finding["kind"]])
+    pieces, position = [], 0
+    for start, end, kind in spans:
+        pieces.append(text[position:start])
+        pieces.append(f"[REDACTED:{kind}]")
+        position = end
     pieces.append(text[position:])
     return "".join(pieces), findings
 
@@ -58,7 +68,12 @@ def scan_args(args: dict) -> list[dict]:
             results.extend({**finding, "field": path} for finding in scan(value))
         elif isinstance(value, dict):
             for key, item in value.items():
-                walk(item, f"{path}.{key}" if path else str(key))
+                name = str(key)
+                key_hits = scan(name)
+                segment = "[REDACTED]" if key_hits else name
+                child = f"{path}.{segment}" if path else segment
+                results.extend({**hit, "field": child} for hit in key_hits)
+                walk(item, child)
         elif isinstance(value, (list, tuple)):
             for index, item in enumerate(value):
                 walk(item, f"{path}.{index}" if path else str(index))
