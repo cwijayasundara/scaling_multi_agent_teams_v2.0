@@ -1,13 +1,15 @@
 import json
 import pickle
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from teamlab.analytics import digest
 from teamlab.controller import Controller
 from teamlab.fixture import generate
-from teamlab.identity import key_id_for, verify_journal_signatures
-from teamlab.security import SecurityError
+from teamlab.identity import key_id_for, new_credential, verify_journal_signatures
+from teamlab.security import CredentialExpired, RunStopped, SecurityError
 
 
 @pytest.fixture
@@ -15,6 +17,26 @@ def controller(tmp_path):
     source = tmp_path / "source.csv"
     generate(source, rows=100, seed=3)
     return Controller(tmp_path / "run", source)
+
+
+class Clock:
+    def __init__(self, base):
+        self.base, self.offset = base, 0.0
+
+    def advance(self, seconds):
+        self.offset += seconds
+        assert self.offset < 1200, "stay inside the run deadline"
+
+    def __call__(self):
+        return self.base + self.offset
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    # Patch time.time globally so store, controller leases and gateway agree.
+    fake = Clock(time.time())
+    monkeypatch.setattr(time, 'time', fake)
+    return fake
 
 
 def test_each_agent_has_distinct_registered_key(controller):
@@ -104,3 +126,70 @@ def test_bundle_exports_public_keys(controller):
     agents = json.loads((out / 'agents.json').read_text())
     assert {a['agent_id'] for a in agents} == {'coordinator', 'verifier', 'worker-0', 'worker-1', 'worker-2', 'worker-3'}
     assert all(key_id_for(a['public_key']) == a['key_id'] for a in agents)
+
+
+def test_idle_agent_past_ttl_refreshes_and_rotates_token(controller, clock):
+    cred = controller.worker_tokens[0]; old = cred.token
+    clock.advance(301)
+    assert controller.claim(cred)['state'] == 'LEASED'
+    assert cred.token != old
+    assert cred.expires_at > time.time()
+    refreshed = [e for e in controller.store.events(controller.run_id) if e['kind'] == 'credential.refreshed']
+    assert [e['detail']['agent_id'] for e in refreshed] == ['worker-0']
+    assert refreshed[0]['detail']['key_id'] == cred.key_id
+
+
+def test_copied_bearer_token_without_key_expires(controller, clock):
+    cred = controller.worker_tokens[0]
+    thief = new_credential(cred.agent_id, cred.token, cred.expires_at)  # different key, same bearer string
+    clock.advance(301)
+    with pytest.raises(SecurityError):
+        controller.claim(thief)
+    assert controller.store.run(controller.run_id)['state'] in ('RUNNING', 'STOPPED')
+    events = controller.store.events(controller.run_id)
+    assert not any(e['kind'] == 'action.authorized' and e['agent_id'] == 'worker-0' for e in events)
+    task = next(t for t in controller.store.tasks(controller.run_id) if t['shard'] == 0)
+    assert task['state'] != 'LEASED' and task['owner'] is None
+    assert not any(e['kind'] == 'credential.refreshed' for e in events)
+
+
+def test_expired_copied_bearer_token_is_rejected_without_stopping_team(controller, clock):
+    cred = controller.worker_tokens[0]
+    thief = new_credential(cred.agent_id, cred.token, cred.expires_at)
+    clock.advance(301)
+    with pytest.raises(CredentialExpired):
+        controller.claim(thief)
+    assert controller.store.run(controller.run_id)['state'] == 'RUNNING'
+    rejected = [e['detail'] for e in controller.store.events(controller.run_id) if e['kind'] == 'credential.rejected']
+    assert rejected and rejected[0]['agent_id'] == 'worker-0' and rejected[0]['key_id'] == thief.key_id
+
+
+def test_old_token_is_invalid_after_rotation(controller, clock):
+    cred = controller.worker_tokens[0]; old = cred.token
+    clock.advance(250); controller.claim(cred)
+    assert old not in controller.gateway._sessions
+    assert cred.token in controller.gateway._sessions
+
+
+def test_refresh_fails_after_operator_stop(controller, clock):
+    cred = controller.worker_tokens[0]
+    controller.store.stop(controller.run_id, 'operator')
+    clock.advance(301)
+    with pytest.raises(RunStopped):
+        controller.gateway.refresh(cred)
+
+
+def test_concurrent_calls_at_refresh_boundary_all_succeed(controller, clock):
+    cred = controller.lead
+    clock.advance(250)
+    with ThreadPoolExecutor(8) as pool:
+        results = list(pool.map(lambda _: controller.progress(cred), range(8)))
+    assert len(results) == 8
+    assert sum(e['kind'] == 'credential.refreshed' for e in controller.store.events(controller.run_id)) == 1
+
+
+def test_credential_ttl_is_configurable(tmp_path):
+    source = tmp_path / "source.csv"
+    generate(source, rows=20, seed=3)
+    c = Controller(tmp_path / "run", source, workers=1, credential_ttl=120)
+    assert 60 < c.lead.expires_at - time.time() <= 120

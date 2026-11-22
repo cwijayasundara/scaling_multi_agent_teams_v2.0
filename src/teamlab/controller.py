@@ -9,12 +9,12 @@ from pathlib import Path
 
 from .analytics import analyze, canonical, combine, digest
 from .fixture import read_records, shard_for
-from .security import Gateway, RunStopped, SecurityError
+from .security import CREDENTIAL_TTL_SECONDS, Gateway, RunStopped, SecurityError
 from .store import Store
 
 
 class Controller:
-    def __init__(self, root: Path, input_path: Path, workers: int = 4, mode: str = "scripted", monitors=None, database_url=None, model_call_limit=100, tool_call_limit=400, spend_budget=None, plane=None):
+    def __init__(self, root: Path, input_path: Path, workers: int = 4, mode: str = "scripted", monitors=None, database_url=None, model_call_limit=100, tool_call_limit=400, spend_budget=None, plane=None, credential_ttl=CREDENTIAL_TTL_SECONDS):
         if not 1 <= workers <= 8:
             raise ValueError("workers must be between 1 and 8")
         if mode not in ("scripted", "live", "sdk-replay"):
@@ -43,7 +43,7 @@ class Controller:
                 "mode": mode, "input_hash": self.input_hash, "workers": workers,
                 "execution_profile": "trusted-tools-only; no model-written code or host shell",
             })
-        self.gateway = Gateway(self.store, self.run_id, monitors=monitors)
+        self.gateway = Gateway(self.store, self.run_id, monitors=monitors, credential_ttl=credential_ttl)
         self.lead = self.gateway.issue("coordinator", "coordinator")
         self.verifier = self.gateway.issue("verifier", "verifier")
         self.worker_tokens = {i: self.gateway.issue(f"worker-{i}", "worker", i) for i in range(workers)}

@@ -32,6 +32,10 @@ class MonitorUnavailable(SecurityError):
     pass
 
 
+class CredentialExpired(SecurityError):
+    pass
+
+
 @dataclass(frozen=True)
 class Identity:
     run_id: str
@@ -39,6 +43,13 @@ class Identity:
     role: str
     epoch: int
     shard: int | None = None
+
+
+@dataclass(frozen=True)
+class _Session:
+    identity: Identity
+    key_id: str
+    expires_at: float
 
 
 CAPABILITIES = {
@@ -195,15 +206,19 @@ def bounded_monitor(monitor, identity, action, args, context, timeout: float, tr
 
 
 class Gateway:
-    def __init__(self, store: Store, run_id: str, monitors=None, monitor_timeout=10):
+    def __init__(self, store: Store, run_id: str, monitors=None, monitor_timeout=10,
+                 credential_ttl=CREDENTIAL_TTL_SECONDS, refresh_margin=60):
         self.store, self.run_id = store, run_id
         self.monitors = monitors if monitors is not None else [RuleMonitor()]
         if not self.monitors:
             raise SecurityError("at least one monitor is required")
         self.monitor_timeout = monitor_timeout
+        if not 0 <= refresh_margin < credential_ttl:
+            raise ValueError("refresh margin must be shorter than the credential lifetime")
+        self.credential_ttl, self.refresh_margin = credential_ttl, refresh_margin
         self.journal = Journal(store.root / "audit.jsonl")
         self.journal.verify()
-        self._sessions: dict[str, Identity] = {}
+        self._sessions: dict[str, _Session] = {}
         self._public_keys: dict[str, tuple[str, str]] = {}
         self.archive = None
         for monitor in self.monitors:
@@ -215,23 +230,65 @@ class Gateway:
             raise SecurityError("unknown role")
         run = self.store.run(self.run_id)
         token = secrets.token_urlsafe(32)
-        cred = new_credential(agent_id, token, time.time() + CREDENTIAL_TTL_SECONDS)
+        expires_at = time.time() + self.credential_ttl
+        cred = new_credential(agent_id, token, expires_at)
         with self.store.transaction() as db:
             db.execute("INSERT INTO agent_keys(key_id,run_id,agent_id,role,public_key,created) VALUES (?,?,?,?,?,?)", (
                 cred.key_id, self.run_id, agent_id, role, cred.public_key_b64(), time.time()))
             self.store.event(db, self.run_id, agent_id, "agent.key_registered", {
                 "agent_id": agent_id, "role": role, "key_id": cred.key_id})
         self._public_keys[cred.key_id] = (self.run_id, cred.public_key_b64())
-        self._sessions[token] = Identity(self.run_id, agent_id, role, run["epoch"], shard)
+        self._sessions[token] = _Session(Identity(self.run_id, agent_id, role, run["epoch"], shard), cred.key_id, expires_at)
         return cred
 
+    def _session(self, cred: Credential) -> _Session:
+        session = self._sessions.get(cred.token) if isinstance(cred, Credential) else None
+        if session is None:
+            raise SecurityError("invalid service identity")
+        return session
+
     def identity(self, cred: Credential) -> Identity:
-        try:
-            if not isinstance(cred, Credential):
-                raise KeyError
-            return self._sessions[cred.token]
-        except KeyError as exc:
-            raise SecurityError("invalid service identity") from exc
+        session = self._session(cred)
+        if session.expires_at - time.time() >= self.refresh_margin:
+            return session.identity
+        with cred._lock:
+            # Another thread holding this credential may have rotated it already.
+            session = self._session(cred)
+            if session.expires_at - time.time() >= self.refresh_margin:
+                return session.identity
+            try:
+                self.refresh(cred)
+            except CredentialExpired:
+                if session.expires_at <= time.time():
+                    raise
+                # Still valid: the request signature check in call() decides.
+                return session.identity
+            return self._session(cred).identity
+
+    def refresh(self, cred: Credential) -> None:
+        """Rotate the bearer token after the holder proves possession of its registered key."""
+        session = self._session(cred)
+        who = session.identity
+        old_token = cred.token
+        envelope = {"refresh": hashlib.sha256(old_token.encode()).hexdigest(), "run_id": who.run_id,
+            "agent_id": who.agent_id, "issued_at": time.time()}
+        registered = self._public_keys.get(session.key_id)
+        if (cred.key_id != session.key_id or registered is None or registered[0] != who.run_id
+                or not verify_signature(registered[1], envelope, cred.sign(envelope))):
+            with self.store.transaction() as db:
+                self.store.event(db, who.run_id, who.agent_id, "credential.rejected", {
+                    "agent_id": who.agent_id, "key_id": cred.key_id, "reason": "refresh signature invalid"})
+            raise CredentialExpired("credential expired; refresh requires the registered key")
+        run = self.store.run(who.run_id)
+        if run["state"] != "RUNNING" or run["epoch"] != who.epoch or time.time() >= run["deadline"]:
+            raise RunStopped("credential refresh revoked")
+        token, expires_at = secrets.token_urlsafe(32), time.time() + self.credential_ttl
+        with self.store.transaction() as db:
+            self.store.event(db, who.run_id, who.agent_id, "credential.refreshed", {
+                "agent_id": who.agent_id, "key_id": cred.key_id, "expires_at": expires_at})
+        self._sessions[token] = _Session(who, session.key_id, expires_at)
+        del self._sessions[old_token]
+        cred._rotate(token, expires_at)
 
     def active(self, token: Credential):
         who = self.identity(token)
