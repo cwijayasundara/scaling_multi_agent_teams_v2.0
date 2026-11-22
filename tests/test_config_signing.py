@@ -185,5 +185,16 @@ def test_signer_entry_with_wrong_key_id_is_rejected(tmp_path, monkeypatch):
     signers = tmp_path / "signers.json"
     signers.write_text(json.dumps({"signers": [entry]}))
     monkeypatch.setenv("TEAMLAB_CONFIG_SIGNERS", str(signers))
-    with pytest.raises(ConfigIntegrityError):
+    with pytest.raises(ConfigIntegrityError, match="invalid signer entry"):
+        trusted_signers()
+
+
+@pytest.mark.parametrize("public_key", ["not base64 !!", "", 7])
+def test_signer_entry_with_bad_public_key_is_rejected(tmp_path, monkeypatch, public_key):
+    entry = generate_key(tmp_path / "other.key")
+    entry["public_key"] = public_key
+    signers = tmp_path / "signers.json"
+    signers.write_text(json.dumps({"signers": [entry]}))
+    monkeypatch.setenv("TEAMLAB_CONFIG_SIGNERS", str(signers))
+    with pytest.raises(ConfigIntegrityError, match="invalid signer entry"):
         trusted_signers()

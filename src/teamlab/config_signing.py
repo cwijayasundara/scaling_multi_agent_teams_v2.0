@@ -66,8 +66,12 @@ def trusted_signers() -> dict[str, str]:
         signers = {entry["key_id"]: entry["public_key"] for entry in entries}
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise ConfigIntegrityError(f"signer list {source} is unreadable or malformed") from exc
-    if any(not isinstance(k, str) or not isinstance(v, str) or key_id_for(v) != k for k, v in signers.items()):
-        raise ConfigIntegrityError(f"signer list {source} has an entry whose key id does not match its key")
+    try:
+        mismatched = any(not isinstance(k, str) or not isinstance(v, str) or key_id_for(v) != k for k, v in signers.items())
+    except (ValueError, TypeError) as exc:  # undecodable public key
+        raise ConfigIntegrityError(f"invalid signer entry in {source}") from exc
+    if mismatched:
+        raise ConfigIntegrityError(f"invalid signer entry in {source}: key id does not match its key")
     return signers
 
 
