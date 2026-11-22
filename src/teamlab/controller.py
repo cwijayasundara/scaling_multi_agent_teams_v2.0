@@ -220,7 +220,27 @@ class Controller:
         with self.store.connect() as db:
             keys = [dict(r) for r in db.execute('SELECT agent_id,role,key_id,public_key FROM agent_keys WHERE run_id=? ORDER BY created,agent_id', (self.run_id,))]
         (out / "agents.json").write_text(canonical(keys) + "\n")
-        (out / "model_summaries.json").write_text(json.dumps(self.model_summaries, indent=2) + "\n")
+        from . import dlp
+        summaries, redacted_files = {}, []
+        for name, text in self.model_summaries.items():
+            summaries[name], hits = dlp.redact(text)
+            if hits and "model_summaries.json" not in redacted_files:
+                redacted_files.append("model_summaries.json")
+        (out / "model_summaries.json").write_text(json.dumps(summaries, indent=2) + "\n")
+        # input.csv is operator data; sources.json is hash-bound. Neither is scanned.
+        findings = []
+        for path in sorted(out.iterdir()):
+            if not path.is_file() or path.name in ("input.csv", "sources.json", "manifest.json"):
+                continue
+            counts: dict[str, int] = {}
+            for hit in dlp.scan(path.read_text(errors="replace")):
+                counts[hit["kind"]] = counts.get(hit["kind"], 0) + 1
+            findings.extend({"file": path.name, "kind": kind, "count": count} for kind, count in sorted(counts.items()))
+        report = {"filter": "output-filter-v1", "findings": findings, "redacted_files": redacted_files}
+        (out / "dlp.json").write_text(canonical(report) + "\n")
+        if findings or redacted_files:
+            with self.store.transaction() as db:
+                self.store.event(db, self.run_id, "controller", "output.filtered", report)
         manifest = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in out.iterdir() if p.is_file() and p.name != "manifest.json"}
         (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         return out

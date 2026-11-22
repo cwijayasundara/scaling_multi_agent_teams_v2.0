@@ -13,6 +13,7 @@ from threading import Thread
 from queue import Queue, Empty
 
 from .analytics import canonical, digest
+from . import dlp
 from .identity import Credential, new_credential, verify_signature
 from .store import Store
 
@@ -206,6 +207,8 @@ def bounded_monitor(monitor, identity, action, args, context, timeout: float, tr
 
 
 class Gateway:
+    output_filter_name = "output-filter-v1"
+
     def __init__(self, store: Store, run_id: str, monitors=None, monitor_timeout=10,
                  credential_ttl=CREDENTIAL_TTL_SECONDS, refresh_margin=60):
         self.store, self.run_id = store, run_id
@@ -368,6 +371,17 @@ class Gateway:
         if registered is None or registered[0] != who.run_id or not verify_signature(registered[1], envelope, signature):
             self.store.stop(who.run_id, f"request signature invalid: {who.agent_id}/{action}")
             raise SecurityError("request signature invalid; entire team stopped")
+        # Gateway code, not a monitor: replacing self.monitors cannot remove it.
+        hits = [h for h in dlp.scan_args(args) if h["kind"] in dlp.SECRET_KINDS]
+        if hits:
+            verdict = {"monitor": self.output_filter_name, "verdict": "BLOCK",
+                "kinds": sorted({h["kind"] for h in hits}), "fields": sorted({h["field"] for h in hits})}
+            with self.store.transaction() as db:
+                self.store.event(db, who.run_id, who.agent_id, "action.denied", {
+                    "action": action, "args_hash": digest(args), "verdicts": [verdict]})
+            reason = f"{self.output_filter_name}: BLOCK on {who.agent_id}/{action}"
+            self.store.stop(who.run_id, reason, "STOPPED")
+            raise RunStopped(f"output filter stopped the entire team: {reason}")
         with self.store.connect() as context_db:
             context_rows = context_db.execute('SELECT * FROM events WHERE run_id=? ORDER BY seq DESC LIMIT 256', (who.run_id,)).fetchall()
         context = [{**dict(row), 'detail': json.loads(row['detail'])} for row in reversed(context_rows)]
