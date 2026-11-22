@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import mkdtemp
 
-from .attack_suite import run_scenario
+from .attack_suite import NO_RUN, PROCESS_WIDE, run_scenario
 from .metrics import FLEET_RUNS, SLO_SECONDS, _median, _ratio, acknowledge, alert_metrics, fleet_metrics
 from .store import Store
 from .triage import ALERT_KINDS, RuleTriage, triage_run
@@ -23,8 +23,6 @@ ACK_BY = "tabletop"
 def _incident(scenario_id: str, root: Path, acknowledge_after_s: float | None) -> dict:
     result = run_scenario(scenario_id, root)
     run_id = result["run_id"]
-    if run_id is None:
-        raise ValueError(f"{scenario_id} creates no TeamLab run; a tabletop incident needs one")
     store = Store(root / "run")
     triage_run(store, run_id, RuleTriage())
     if acknowledge_after_s is not None:
@@ -61,6 +59,14 @@ def run_tabletop(root: Path, incidents=DEFAULT_INCIDENTS, acknowledge_after_s: f
         raise ValueError("a tabletop needs at least one incident and no duplicates")
     if acknowledge_after_s is not None and acknowledge_after_s < 0:
         raise ValueError("acknowledge_after_s must be non-negative")
+    # Checked before any incident starts: a process-wide scenario patches state every concurrent incident reads.
+    shared = sorted(set(incidents) & PROCESS_WIDE)
+    if shared:
+        raise ValueError(f"{', '.join(shared)} patch process-wide state (isolation: process-wide in threats.json) "
+                         "and would break concurrent incidents; run them alone with teamlab attack-suite")
+    no_run = sorted(set(incidents) & NO_RUN)
+    if no_run:
+        raise ValueError(f"{', '.join(no_run)} create no TeamLab run; a tabletop incident needs one")
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     base = Path(mkdtemp(prefix="tabletop-", dir=root))  # every drill gets fresh incident roots

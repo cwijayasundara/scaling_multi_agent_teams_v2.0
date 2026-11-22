@@ -26,6 +26,7 @@ def test_catalogue_is_complete_and_verified():
         assert s['owasp_agentic'] or s['mitre'] or s['unmapped']
         assert s['eBook_part'] in ('II', 'III', 'V') and s['expected_control']
         assert all(ref['framework'] in ('ATLAS', 'ATT&CK') for ref in s['mitre'])
+        assert s['isolation'] in ('run-root', 'process-wide') and type(s['creates_run']) is bool
 
 
 @pytest.mark.parametrize('scenario', OFFLINE)
@@ -142,3 +143,71 @@ def test_matrix_lists_every_scenario_and_states_gaps():
     for s in cat['scenarios']:
         if s['unmapped']:
             assert s['unmapped'] in gaps
+
+
+def test_injected_row_is_put_in_front_of_an_agent(tmp_path):
+    r = run_scenario('indirect-prompt-injection', tmp_path / 'inject')
+    assert r['prevented'] is True
+    assert 'injected row returned in an inspect_shard sample: True' in r['notes']
+
+
+def test_injection_not_put_in_front_of_an_agent_is_not_exercised(tmp_path, monkeypatch):
+    # Seed 3 puts the injected record outside every inspect_shard sample: nothing was attacked.
+    monkeypatch.setattr(attack_suite, 'INJECTION_SEED', 3)
+    r = run_scenario('indirect-prompt-injection', tmp_path / 'inject')
+    assert r['prevented'] is None and 'not exercised' in r['notes']
+
+
+def test_audit_tampering_is_labelled_tamper_evident_in_the_matrix():
+    cat = load_catalogue()
+    results = [_result(s) for s in SCENARIOS]
+    report = {'generated_at': 'x', 'catalogue_version': cat['version'], 'results': results,
+              'summary': attack_suite.summarize(results)}
+    row = next(line for line in render_matrix(report, cat).splitlines() if '`audit-journal-tampering`' in line)
+    assert row.split('|')[4].strip() == 'tamper-evident (detected by verify-audit)'
+
+
+def test_matrix_lists_uncovered_threat_classes():
+    cat = load_catalogue()
+    assert {u['owasp_id'] for u in cat['uncovered']} == {'ASI04', 'ASI06'}
+    for u in cat['uncovered']:
+        assert u['verified'] is True and u['source'].startswith('https://genai.owasp.org/') and u['class'] and u['reason']
+    results = [_result(s) for s in SCENARIOS]
+    report = {'generated_at': 'x', 'catalogue_version': cat['version'], 'results': results,
+              'summary': attack_suite.summarize(results)}
+    gaps = render_matrix(report, cat).split('## Gaps', 1)[1].split('## Notes', 1)[0]
+    line = next(line for line in gaps.splitlines() if line.startswith('- Uncovered threat classes:'))
+    assert 'ASI04' in line and 'ASI06' in line and 'Supply Chain' in line and 'Memory' in line
+
+
+def test_an_unexpected_scenario_error_is_recorded_and_the_suite_continues(tmp_path, monkeypatch):
+    def broken(root):
+        raise RuntimeError('boom')
+    subset = {'out-of-scope-tool': SCENARIOS['out-of-scope-tool'], 'broken': broken,
+              'credential-exfiltration-note': SCENARIOS['credential-exfiltration-note']}
+    monkeypatch.setattr(attack_suite, 'SCENARIOS', subset)
+    report = run_suite(tmp_path / 'suite')
+    assert [r['id'] for r in report['results']] == list(subset)
+    bad = report['results'][1]
+    assert bad['error'] == 'RuntimeError' and bad['prevented'] is None and bad['detected'] is None
+    assert report['results'][0]['prevented'] is True and report['results'][2]['prevented'] is True
+    s = report['summary']
+    assert s['scenarios'] == 3 and s['prevented'] == 2 and s['errors'] == ['broken']
+    assert 'broken' not in s['not_prevented'] and 'broken' not in s['not_detected']
+
+
+def test_cli_refuses_a_markdown_output_path(tmp_path, monkeypatch):
+    ran = []
+    monkeypatch.setattr(attack_suite, 'run_suite', lambda *a, **k: ran.append(1))
+    output = tmp_path / 'threat-coverage.md'
+    output.write_text('keep me')
+    assert main(['attack-suite', '--root', str(tmp_path / 'runs'), '--output', str(output)]) == 1
+    assert ran == [] and output.read_text() == 'keep me'
+
+
+def test_cli_exits_1_when_a_scenario_is_not_prevented(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(dlp, 'scan_args', lambda args: [])
+    monkeypatch.setattr(attack_suite, 'SCENARIOS', {'credential-exfiltration-note': SCENARIOS['credential-exfiltration-note']})
+    output = tmp_path / 'tc.json'
+    assert main(['attack-suite', '--root', str(tmp_path / 'runs'), '--output', str(output)]) == 1
+    assert json.loads(output.read_text())['summary']['not_prevented'] == ['credential-exfiltration-note']

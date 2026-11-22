@@ -101,3 +101,14 @@ def test_cli_prints_the_drill(tmp_path, capsys):
     out = json.loads(capsys.readouterr().out)
     assert [i['id'] for i in out['incidents']] == list(DEFAULT_INCIDENTS)
     assert out['fleet']['human_coverage'] == 1.0
+
+
+@pytest.mark.parametrize('scenario', ['tampered-policy-config', 'plane-untrusted-client'])
+def test_process_wide_scenarios_are_refused_before_any_incident_starts(tmp_path, monkeypatch, scenario):
+    # These scenarios patch os.environ or profiles.DEFAULT_PATH for the whole process; run beside other
+    # incidents they make unrelated Controllers fail their config check, so the drill refuses them up front.
+    started = []
+    monkeypatch.setattr('teamlab.tabletop.run_scenario', lambda sid, root: started.append(sid))
+    with pytest.raises(ValueError, match='process-wide'):
+        run_tabletop(tmp_path / 'drill', incidents=('out-of-scope-tool', scenario))
+    assert started == [] and not (tmp_path / 'drill').exists()

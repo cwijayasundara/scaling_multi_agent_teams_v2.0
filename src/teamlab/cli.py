@@ -490,13 +490,17 @@ def main(argv=None):
             finally:
                 server.server_close()
         elif args.command == "attack-suite":
-            from .attack_suite import load_catalogue, render_matrix, run_suite
-            report = run_suite(Path(args.root), include_slow=args.include_slow)
+            from . import attack_suite
             output = Path(args.output)
+            if output.suffix != ".json":
+                # The matrix is written beside the JSON with a .md suffix; any other suffix could overwrite one with the other.
+                raise ValueError(f"--output must name the .json report (the .md matrix is written beside it): {output}")
+            report = attack_suite.run_suite(Path(args.root), include_slow=args.include_slow)
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_text(json.dumps(report, indent=2) + "\n")
-            output.with_suffix(".md").write_text(render_matrix(report, load_catalogue()))
+            output.with_suffix(".md").write_text(attack_suite.render_matrix(report, attack_suite.load_catalogue()))
             print(json.dumps(report["summary"], indent=2))
+            return 1 if report["summary"]["not_prevented"] or report["summary"]["errors"] else 0
         elif args.command == "tabletop":
             from .tabletop import run_tabletop
             print(json.dumps(run_tabletop(Path(args.root), acknowledge_after_s=args.ack_after), indent=2))
