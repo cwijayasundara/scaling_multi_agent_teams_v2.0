@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from teamlab.analytics import digest
+from teamlab.attack_suite import _rewrite_journal
 from teamlab.controller import Controller
 from teamlab.fixture import generate
 from teamlab.identity import key_id_for, new_credential, verify_journal_signatures
@@ -36,16 +36,7 @@ def test_audit_records_are_signed_and_verify(controller):
 def _rewrite(controller, mutate):
     controller.run_scripted()
     path = controller.store.root / 'audit.jsonl'
-    lines = [json.loads(line) for line in path.read_text().splitlines()]
-    mutate(lines[2]['record'])
-    previous = '0' * 64
-    for item in lines:
-        item['previous'] = previous
-        item.pop('hash', None)
-        item['hash'] = digest(item)
-        previous = item['hash']
-    path.write_text(''.join(json.dumps(item, sort_keys=True, separators=(',', ':')) + '\n' for item in lines))
-    assert controller.gateway.journal.verify() == len(lines)  # chain still valid
+    assert controller.gateway.journal.verify() == _rewrite_journal(path, mutate)  # chain still valid
     return path
 
 

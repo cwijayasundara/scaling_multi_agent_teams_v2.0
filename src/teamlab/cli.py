@@ -231,6 +231,10 @@ def parser():
     audit.add_argument("--root", default="runs/demo")
     attack = sub.add_parser("attack-demo")
     attack.add_argument("--root", default="runs/attack")
+    suite = sub.add_parser("attack-suite", help="Run the offline threat scenarios; write the coverage JSON and markdown matrix")
+    suite.add_argument("--root", default="runs/attack-suite")
+    suite.add_argument("--output", default="reports/threat-coverage.json")
+    suite.add_argument("--include-slow", action="store_true", help="Also run scenarios that spawn control-plane processes")
     triage = sub.add_parser("triage", help="Record first-pass dispositions for a run's alerts; never changes run state")
     budget_options(triage)
     triage.add_argument("--root", required=True)
@@ -482,6 +486,14 @@ def main(argv=None):
                 server.serve_forever()
             finally:
                 server.server_close()
+        elif args.command == "attack-suite":
+            from .attack_suite import load_catalogue, render_matrix, run_suite
+            report = run_suite(Path(args.root), include_slow=args.include_slow)
+            output = Path(args.output)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps(report, indent=2) + "\n")
+            output.with_suffix(".md").write_text(render_matrix(report, load_catalogue()))
+            print(json.dumps(report["summary"], indent=2))
         elif args.command == "attack-demo":
             root = Path(args.root)
             generate(root / "input.csv", rows=100)
