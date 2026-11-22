@@ -10,7 +10,7 @@ TeamLab evaluates how to coordinate an AI agent team and stop it as a unit when 
 
 The gateway authenticates each request, checks its capabilities, applies monitoring, and records the decision before dispatch. A team-wide stop increments the run epoch, invalidating all outstanding agent credentials. The commit transaction checks the same epoch under a database lock. A read-only dashboard displays committed actions and gives operators visibility into the run.
 
-All 83 backend tests passed, and all 20 replay runs matched the reference grader across configurations with one to eight workers. The sandbox passed its boundary checks on one macOS development host. The live run with one worker did not complete, and the offline behavioural reviewer recorded 0.0 strict scenario recall on frozen, text-only test cases. The results support the tested deterministic controls under these conditions and identify monitoring and live-run reliability as priorities for further evaluation.
+In the v1 evaluation (14 November 2026), all 83 backend tests passed, and all 20 replay runs matched the reference grader across configurations with one to eight workers. The sandbox passed its boundary checks on one macOS development host. The live run with one worker did not complete, and the offline behavioural reviewer recorded 0.0 strict scenario recall on frozen, text-only test cases. The results support the tested deterministic controls under these conditions and identify monitoring and live-run reliability as priorities for further evaluation. After the Zero Trust work (section 13), on 22 November 2026, 329 backend tests passed with 8 skipped (PostgreSQL not enabled) and all 19 dashboard tests passed.
 
 ---
 
@@ -201,7 +201,7 @@ The evaluation covers automated tests, replay correctness, host containment, liv
 [FIG 10: img/fig10-evidence.png — Measured results scorecard]
 
 **Test, replay, and containment results**
-- **83 backend tests pass** (with PostgreSQL enabled). They cover stale-lease and stop races, exact-coverage split rollback, dependency ordering, cross-run identities, retry limits, artifact ownership, failed reproduction, exact-hash Git integration, checkpoint recovery, budget exhaustion, archive-write failure and validation of reviewer evidence. The 12 dashboard tests and the production build pass.
+- **83 backend tests passed in the v1 evaluation** (14 November 2026, with PostgreSQL enabled). They cover stale-lease and stop races, exact-coverage split rollback, dependency ordering, cross-run identities, retry limits, artifact ownership, failed reproduction, exact-hash Git integration, checkpoint recovery, budget exhaustion, archive-write failure and validation of reviewer evidence. The 12 dashboard tests and the production build passed. On 22 November 2026, after the Zero Trust work, the backend suite gave 329 passed and 8 skipped without PostgreSQL (the PostgreSQL and opt-in guest tests are among the skips), and the dashboard suite gave 19 passed.
 - **Correctness.** All 20 seeded collaborative replay runs (1, 2, 4 and 8 workers × 5 seeds) match the reference grader exactly. The 10,000-row run accepted 9,999 records, excluded 11 with reasons, and named NORTH with 48,110,968 pence, all verified independently.
 - **Containment.** The forbidden-tool demonstration stopped the whole team and rejected a teammate's next action. OpenShell qualification passed every boundary check on the dev host.
 
@@ -286,7 +286,9 @@ This section was added on 22 November 2026, after the Zero Trust work scored Tea
 | Recovery | Foundation, partly Enterprise | Clean restart; integrity-checked snapshots under fresh authority |
 | Governance | Foundation | `SECURITY.md` |
 
-**Threat coverage.** `teamlab attack-suite` ran 12 offline scenarios from the `threats-v1` catalogue on 22 November 2026 (`reports/threat-coverage.json`, `reports/threat-coverage.md`). Each scenario attacks a real TeamLab run with synthetic data and no network, and its outcome is read from the attacked run's own state. Each scenario maps to OWASP Agentic Top 10 and MITRE ATLAS or ATT&CK identifiers verified against the official pages; `stale-result-after-stop` has no confirmed mapping and claims none.
+**Threat coverage.** `teamlab attack-suite` ran 12 offline scenarios from the `threats-v1` catalogue on 22 November 2026 (`reports/threat-coverage.json`, `reports/threat-coverage.md`). Each scenario attacks a real TeamLab run with synthetic data and no network, and its outcome is read from the attacked run's own state. Where a mapping could be confirmed, a scenario carries OWASP Agentic Top 10 and MITRE ATLAS or ATT&CK identifiers, each verified against the official page (`src/teamlab/threats.json`). Where none could be confirmed, none is claimed:
+- No OWASP mapping: `tool-flooding`, `tampered-policy-config`, `audit-journal-tampering`, `stale-result-after-stop`, `plane-untrusted-client`
+- No MITRE mapping: `restricted-agent-escalation`, `stale-result-after-stop`
 
 [FIG 12: img/fig12-threat-coverage.png — Threat coverage: 12 offline scenarios against prevention, detection, triage and containment]
 

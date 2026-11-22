@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parent.parent
 WHITEPAPER = ROOT / "docs" / "whitepaper" / "whitepaper.md"
 FIGURES = ROOT / "docs" / "whitepaper" / "figures.html"
 REPORT = json.loads((ROOT / "reports" / "threat-coverage.json").read_text())
+CATALOGUE = json.loads((ROOT / "src" / "teamlab" / "threats.json").read_text())
 
 COUNT_ROWS = {"Scenarios run": "scenarios", "Prevented": "prevented", "Detected": "detected",
               "Triaged": "triaged"}
@@ -50,6 +51,15 @@ def test_every_scenario_id_named_as_a_gap_is_a_reported_gap():
             assert ids <= gaps, line
 
 
+def test_section_13_names_exactly_the_scenarios_without_a_mapping():
+    section = _section_13()
+    for label, key in (("No OWASP mapping", "owasp_agentic"), ("No MITRE mapping", "mitre")):
+        match = re.search(rf"^- {label}: (.*)$", section, re.M)
+        assert match, f"section 13 has no '- {label}:' line"
+        named = set(re.findall(r"`([a-z0-9-]+)`", match.group(1)))
+        assert named == {s["id"] for s in CATALOGUE["scenarios"] if not s[key]}, label
+
+
 def test_section_13_embeds_the_coverage_figure_and_states_the_pdf_is_stale():
     section = _section_13()
     assert "img/fig12-threat-coverage.png" in section
@@ -57,9 +67,13 @@ def test_section_13_embeds_the_coverage_figure_and_states_the_pdf_is_stale():
     assert "the-swarm-we-designed.pdf" in section
 
 
-def test_figure_12_lists_every_scenario_in_the_report():
+def test_figure_12_rows_match_the_report():
     html = FIGURES.read_text()
     match = re.search(r'<section class="fig" id="f12">(.*?)</section>', html, re.S)
     assert match, "figures.html has no f12 section"
-    for result in REPORT["results"]:
-        assert f'"{result["id"]}"' in match.group(1), result["id"]
+    value = {"true": True, "false": False, "null": None}
+    rows = {m[0]: (value[m[1]], value[m[2]], value[m[3]], m[4]) for m in re.findall(
+        r'\["([a-z0-9-]+)","[^"]*",(true|false|null),(true|false|null),(true|false|null),"([a-z-]+)"\]',
+        match.group(1))}
+    assert rows == {r["id"]: (r["prevented"], r["detected"], r["triaged"], r["containment"])
+                    for r in REPORT["results"]}
