@@ -58,7 +58,11 @@ The run prints its `run_id` first and its `artifacts` folder last. Results are i
 | `events.jsonl` | Full audit trail of every agent action |
 | `agents.json` | Each agent's role and registered Ed25519 public key, for checking signed audit records (`teamlab verify-audit --root ROOT`; a root created before signed records fails with `unsigned audit record`, so start a new root) |
 | `dlp.json` | What the output filter found and which exported files it redacted |
+| `trace.json` | The request trace: one root run span, worker-turn spans and every operation parented to its cause (`teamlab trace --root ROOT --run-id RUN_ID`) |
+| `alert_metrics.json` | Alert triage and acknowledgement coverage, dwell time and SLO breaches at export time |
 
 In the UI, open the run to replay the timeline, inspect each agent and see the evidence checks.
 
 Every alert also gets an automated first-pass disposition. Run `teamlab triage --root runs/openshell --run-id RUN_ID` to record and print it (add `--model` for the tool-free model triager, which needs a budget), or read `GET /runs/RUN_ID/triage` from the monitoring API. Triage only recommends; the operator decides whether to restart.
+
+To measure how alerts are handled, `teamlab trace --root ROOT --run-id RUN_ID` prints the request trace, `teamlab ack --root ROOT --run-id RUN_ID --all-open` (or `--alert-seq N`) records that a human has seen open alerts, and `teamlab metrics --root ROOT [--run-id RUN_ID]` prints triage and human coverage and dwell time (measured from alert detection). The monitoring API serves the same data read-only at `GET /runs/RUN_ID/trace`, `GET /runs/RUN_ID/metrics` and `GET /metrics`; acknowledgement is CLI-only.
