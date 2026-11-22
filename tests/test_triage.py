@@ -105,6 +105,7 @@ def test_rule_mapping_covers_known_reasons():
     assert assess('agent.restricted', {'agent_id': 'worker-1', 'strikes': 1, 'source': 'behavior-profile-v1'})[:3] == human
     assert assess('agent.quarantined', {'agent_id': 'worker-1', 'strikes': 2, 'source': 'credential.rejected'})[:3] == ('likely_true_positive', 'escalate', 'medium')
     assert assess('run.paused', {'reason': 'agent quarantined: verifier'})[:3] == human
+    assert assess('run.paused', {'reason': 'no schedulable workers: all quarantined'})[:3] == human
     assert ALERT_KINDS == {'action.denied', 'run.stopped', 'run.paused', 'credential.rejected', 'agent.restricted', 'agent.quarantined'}
 
 

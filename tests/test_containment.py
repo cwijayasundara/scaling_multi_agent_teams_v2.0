@@ -327,3 +327,23 @@ def test_legacy_run_without_recorded_workflow_uses_heuristic(tmp_path):
         c.store.event(db, c.run_id, "controller", "execution.configured", {"workflow": "collaborative"})
     strike(c.store, c.gateway, c.run_id, "worker-0", "credential.rejected", {})
     assert c.store.run(c.run_id)["state"] == "RUNNING"
+
+
+
+def test_collaborative_run_pauses_when_every_worker_is_quarantined(tmp_path):
+    source = tmp_path / "input.csv"
+    generate(source, 40)
+    c = Controller(tmp_path / "collab", source, workers=2, mode="sdk-replay")
+    team = CollaborativeTeam(c, replay=True)
+    for i in range(2):
+        strike(c.store, c.gateway, c.run_id, f"worker-{i}", "credential.rejected", {})
+    assert c.store.run(c.run_id)["state"] == "RUNNING"
+    turns, turn = [], team.turn
+    team.turn = lambda graph, token, message, parent: turns.append(token) or turn(graph, token, message, parent)
+    with pytest.raises(RunStopped, match="no schedulable workers"):
+        team.run()
+    run = c.store.run(c.run_id)
+    assert (run["state"], run["reason"]) == ("PAUSED", "no schedulable workers: all quarantined")
+    assert turns == [c.lead]  # one planning turn, not lead/verifier turns to MAX_ROUNDS
+    [paused] = [d for d in triage_run(c.store, c.run_id, RuleTriage()) if d["alert_kind"] == "run.paused"]
+    assert paused["report"] == {"classification": "needs_human", "recommended_action": "escalate", "confidence": "medium"}

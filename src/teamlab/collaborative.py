@@ -13,6 +13,7 @@ from .tracing import span
 
 # Scheduler round budget; behaviour profiles are sized against it.
 MAX_ROUNDS = 32
+NO_SCHEDULABLE_WORKERS = 'no schedulable workers: all quarantined'
 
 class BoardReplay(ReplayModel):
     """Reproducible board protocol test, never evidence of autonomous planning."""
@@ -191,6 +192,10 @@ class CollaborativeTeam(AgentTeam):
                         if c.store.run(c.run_id)['state'] == 'COMPLETED':
                             break
                         contained = quarantined(c.store, c.run_id)
+                        if all(worker in contained for worker in self.worker_ids.values()):
+                            # Nobody can take the work: pause rather than spend rounds on lead/verifier turns.
+                            c.store.stop(c.run_id, NO_SCHEDULABLE_WORKERS, 'PAUSED')
+                            raise RunStopped(NO_SCHEDULABLE_WORKERS)
                         with ThreadPoolExecutor(max_workers=c.workers) as pool:
                             futures = [pool.submit(self.turn, self.workers[i], token, 'Work on one eligible task from the board.', round_span)
                                        for i, token in c.worker_tokens.items() if self.worker_ids[i] not in contained]

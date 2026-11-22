@@ -25,6 +25,7 @@ OPERATIONAL_STOPS = ("action budget", "inference budget", "run deadline exceeded
 MONITOR_STOP = re.compile(r"^[a-z0-9-]+-v\d+: [A-Z]+ on ")
 PROFILE_STOP = PROFILE_MONITOR + ": PAUSE on "  # runs recorded before containment
 QUARANTINE_STOP = "agent quarantined: "
+NO_WORKERS_STOP = "no schedulable workers: all quarantined"  # collaborative.NO_SCHEDULABLE_WORKERS
 GATEWAY_STOPS = ("oversized action", "audit sink unavailable or corrupt", "monitor unavailable")
 SUBJECT = re.compile(r"(?:^|\s)([A-Za-z0-9_-]+)/[A-Za-z0-9_]+$")
 
@@ -66,6 +67,8 @@ class RuleTriage:
                 return "needs_human", "escalate", "medium", f"behaviour profile threshold exceeded: {reason}"
             if reason.startswith(QUARANTINE_STOP):
                 return "needs_human", "escalate", "medium", f"quarantined agent's work cannot be reassigned: {reason}"
+            if reason == NO_WORKERS_STOP:
+                return "needs_human", "escalate", "medium", f"every worker is quarantined; no one can take the work: {reason}"
             if reason.startswith(DETERMINISTIC_STOPS):
                 return "likely_true_positive", "keep_stopped", "high", f"deterministic enforcement: {reason}"
             if reason == "monitor unavailable" or (reason.startswith("luna-") and ": PAUSE on " in reason):
