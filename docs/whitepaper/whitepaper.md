@@ -244,18 +244,77 @@ The evaluation covers automated tests, replay correctness, host containment, liv
 8. **Use an independent, protected grader.** The grader validates correctness without importing model-written code.
 9. **Keep the dashboard read-only.** Hold access tokens server-side, render agent output as data, and report the isolation applied to the run.
 10. **Support safe interruption and report evaluation failures.** Define `BLOCKED`, `NEEDS_INPUT`, and fail-closed pauses as explicit outcomes. Publish detection recall alongside positive results.
+11. **Sign configuration and verify it before the run starts.** Refuse to write a run row if a behaviour profile or policy fails its signature check, and keep the signer list outside the repository.
+12. **Contain one agent before stopping the team.** Restrict or quarantine the agent that breaches its profile, revoke its sessions and release its work, and keep team-wide stops for deterministic violations.
+13. **Measure dwell and coverage, and run the attacks.** Record triage and human coverage and dwell for every alert, run a fixed attack suite and a tabletop drill, and publish the scenarios that were not detected.
 
 ## 12. Next steps and conclusion
 
-The open gates, in order: qualify OpenShell on a dedicated Linux/KVM host, with crash behaviour and host observation. Get a 1-worker live run to complete and match the reference before scaling at all. Then improve monitor recall with a monitor from a *different* model family, longer cross-agent context and richer observable evidence. Move authorisation and the coordination database out of the shared runtime onto distinct UIDs. Then, and only on evidence, step through 2 → 4 → 8 workers.
+The open gates, in order: qualify OpenShell on a dedicated Linux/KVM host, with crash behaviour and host observation. Get a 1-worker live run to complete and match the reference before scaling at all. Then improve monitor recall with a monitor from a *different* model family, longer cross-agent context and richer observable evidence. Move authorisation and the coordination database out of the shared runtime onto distinct UIDs, and give the control-plane services their own OS users. Then, and only on evidence, step through 2 → 4 → 8 workers.
 
-Before increasing the number of live agents, operators should verify that a team-wide stop takes effect within a measured interval and that revoked agents cannot commit new results. The evidence collected so far supports further evaluation at the current scale.
+The Zero Trust work (section 13) leaves its own gates: move the configuration signer list out of the repository and add a version to signed configuration so it cannot be rolled back; add certificate rotation and revocation; calibrate profile and containment thresholds on live runs; raise an alert for the two undetected scenarios (indirect injection and a stale submit after a stop); run the slow control-plane scenario; measure dwell from occurrence and with a person acknowledging; and export traces and alerts to an external store.
+
+Before increasing the number of live agents, operators should verify that a team-wide stop takes effect within a measured interval and that revoked agents cannot commit new results. The offline attack suite checks the second on scripted runs only (a stale submit after a stop was refused); neither has been measured on a live run. The evidence collected so far supports further evaluation at the current scale.
 
 ---
 
 **A note on evidence.** TeamLab is a small replica of a *pattern*, not a reproduction of the Fable 5.2 results, and nothing here is a security certification. The workload is synthetic. Replay runs use real Deep Agents graphs driven by a deterministic model double, not an LLM. Live calls used `gpt-6-luna` under explicit spend caps. OpenShell boundary checks passed on one macOS development host, the S3 Object Lock path was qualified against loopback MinIO only, and same-user process separation is weaker than distinct UIDs. No real external intrusion was attempted. Passing a finite test suite demonstrates that suite, not universal safety. Absence of a detected behaviour is not proof of its absence.
 
 *Behavioural monitoring remains the least substantiated control in this evaluation. Further qualification should measure detection recall alongside false positives and evidence coverage.*
+
+## 13. Zero Trust posture
+
+This section was added on 22 November 2026, after the Zero Trust work scored TeamLab against the tier tables of the *Zero Trust for AI Agents* eBook. It is a self-assessment of a local development build, not an audit. The PDF `docs/whitepaper/the-swarm-we-designed.pdf` was not regenerated and still reflects the earlier text, without this section or Figure 12, until it is regenerated.
+
+**Tier by control.** "Tier" is the highest eBook tier TeamLab meets as built, judged conservatively. The full scorecard, with the tests behind each row and the remaining gaps, is in [architecture.md](../../architecture.md#zero-trust-tier-scorecard).
+
+| Control | Tier | Evidence |
+|---|---|---|
+| Agent identity verification | Foundation | Per-agent Ed25519 keys; every request and audit record signed |
+| Service authentication | Enterprise | 5-minute credentials with signed rotation; mutual TLS 1.3 between control-plane services |
+| Permission models | Enterprise | Deny-by-default role capabilities plus a signed attribute-based policy |
+| Privilege scoping | Enterprise | Per-agent restrict, then quarantine; states only move down |
+| Resource boundaries | Enterprise (OpenShell workflow only); below Foundation (default mode) | One microVM per execution, no NIC; the default mode runs all agents in one process |
+| Action logging | Enterprise | Hash-chained, signed journal; Object Lock archive checked against MinIO only |
+| Traceability | Foundation | Every action traced to its cause in one tree per run |
+| Baseline establishment | Foundation | Hand-written, signed behaviour profiles per role |
+| Anomaly detection | Foundation | Threshold rules with first-pass triage; dwell and coverage measured |
+| Automated response | Enterprise | Graduated containment of one agent while the team continues |
+| Input sanitization | Foundation | Size limits, untrusted-content labels, identity fields rejected |
+| Output filtering | Foundation | Pattern-based gateway filter and export redaction |
+| Configuration integrity | Enterprise | Signed profiles and policies, verified before a run row is written |
+| Recovery | Foundation, partly Enterprise | Clean restart; integrity-checked snapshots under fresh authority |
+| Governance | Foundation | `SECURITY.md` |
+
+**Threat coverage.** `teamlab attack-suite` ran 12 offline scenarios from the `threats-v1` catalogue on 22 November 2026 (`reports/threat-coverage.json`, `reports/threat-coverage.md`). Each scenario attacks a real TeamLab run with synthetic data and no network, and its outcome is read from the attacked run's own state. Each scenario maps to OWASP Agentic Top 10 and MITRE ATLAS or ATT&CK identifiers verified against the official pages; `stale-result-after-stop` has no confirmed mapping and claims none.
+
+[FIG 12: img/fig12-threat-coverage.png — Threat coverage: 12 offline scenarios against prevention, detection, triage and containment]
+
+| Measure | Result |
+|---|---|
+| Scenarios run | 12 |
+| Prevented | 12 |
+| Detected | 10 |
+| Triaged | 8 (every scenario that raised an alert; the other four raised none) |
+| Not prevented | none |
+| Not detected | `indirect-prompt-injection`, `stale-result-after-stop` |
+
+The two detection gaps:
+- `indirect-prompt-injection` was not detected: no alert was raised. The run completed with no out-of-scope action authorized, but the replay model double does not act on injected text. The result shows that the gateway path stays in scope, not that a live model resists injection.
+- `stale-result-after-stop` was not detected: the stale submit was refused with `RunStopped`, but the refusal writes no event, so the attempt is not on record.
+
+Detection is also late or out of band for two prevented scenarios. The tampered behaviour profile is caught when the run refuses to start, and the rewritten audit record is caught only when `verify-audit` runs; neither raises an alert in a run. The control-plane scenario with a foreign CA (`plane-untrusted-client`) is slow and was not run in this report; it needs `--include-slow`.
+
+**Tabletop.** On 22 November 2026, `teamlab tabletop --root runs/tabletop --ack-after 1` ran five synthetic incidents concurrently ([tabletop runbook](../runbooks/tabletop.md)). It raised 11 alerts. Triage coverage and human coverage were both 1.0. Fleet dwell was 1.03 s at the median and 1.09 s at the maximum, with no breach of the 3,600 s SLO. A script acknowledged each alert after 1 s, so the dwell shows that the bookkeeping adds almost nothing. It does not measure how fast a person responds.
+
+**Limits.**
+- **Trust anchor in the repository.** The signer list for configuration defaults to `config_signers.json` in the repository, so anyone who can edit the repository can replace it. Production must point `TEAMLAB_CONFIG_SIGNERS` at an operator-controlled file. Signatures carry no version, so an older signed configuration is still accepted.
+- **No certificate rotation.** The control-plane CA is created per launch and valid for 24 hours. There is no rotation within a launch and no revocation list.
+- **Shared OS user.** Control-plane services run as one OS user by default, and the default mode keeps every agent's key in one runtime process. A compromise of that process defeats the per-agent keys.
+- **Uncalibrated live thresholds.** Behaviour-profile limits and containment strike thresholds were sized on scripted and replay runs only, not on live runs.
+- **Dwell measured from detection.** Dwell starts when the alert is raised, not when the anomaly happened, and nothing pages anyone.
+- **No SIEM.** There is no OpenTelemetry or SIEM export. Traces, alerts and metrics stay in the local run store.
+- **Monitor recall still 0.0.** The frozen behavioural reviewer scored 0.0 strict recall on the development and holdout suites (section 9) and has not been re-measured.
 
 ## Sources
 
@@ -267,3 +326,8 @@ Before increasing the number of live agents, operators should verify that a team
 - LangChain, *Deep Agents* documentation: overview, subagents, backends, permissions, sandboxes, human-in-the-loop, streaming.
 - Firecracker production host setup and jailer documentation (the design baseline OpenShell replaced).
 - PostgreSQL documentation: `SELECT … FOR UPDATE SKIP LOCKED`; row-level security.
+- Anthropic, *Zero Trust for AI Agents* (Claude eBook), May 2026. Part III tier tables (Foundation, Enterprise, Advanced).
+- OWASP GenAI Security Project, *OWASP Top 10 for Agentic Applications*, 9 December 2025. https://genai.owasp.org/2025/12/09/owasp-top-10-for-agentic-applications-the-benchmark-for-agentic-security-in-the-age-of-autonomous-ai/
+- MITRE ATLAS data, release 2026.10. https://raw.githubusercontent.com/mitre-atlas/atlas-data/main/dist/v6/ATLAS-2026.10.yaml
+- MITRE ATT&CK techniques T1070, T1134, T1550.001, T1557, T1606 and T1685. https://attack.mitre.org/techniques/T1070/, https://attack.mitre.org/techniques/T1134/, https://attack.mitre.org/techniques/T1550/001/, https://attack.mitre.org/techniques/T1557/, https://attack.mitre.org/techniques/T1606/, https://attack.mitre.org/techniques/T1685/
+- Identifiers verified against these pages on 22 November 2026; each scenario's mapping and source URL is in `src/teamlab/threats.json`.
