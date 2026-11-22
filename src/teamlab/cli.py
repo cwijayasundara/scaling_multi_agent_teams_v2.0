@@ -235,11 +235,16 @@ def parser():
     return p
 
 
+MODEL_COMMANDS = frozenset({"run", "restart", "review-behavior", "evaluate-security", "benchmark", "collaboration-benchmark"})
+
+
 def main(argv=None):
     args = parser().parse_args(argv)
     try:
         from .config import load_local_secrets, load_provider_key
-        args.provider_key_source = load_provider_key(load_local_secrets())
+        dotenv_loaded = load_local_secrets()
+        # Only commands that can make model calls consult the OS credential store.
+        args.provider_key_source = load_provider_key(dotenv_loaded) if args.command in MODEL_COMMANDS else "none"
         if args.command == 'qualify-host':
             from .qualify import write_host_report
             from .execution import OpenShellBroker

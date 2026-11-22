@@ -474,7 +474,8 @@ def test_provider_key_prefers_environment(monkeypatch):
 
 def test_provider_key_reads_keychain_without_shell(monkeypatch):
     from teamlab.config import load_provider_key
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "placeholder")  # so teardown restores state
+    monkeypatch.delenv("OPENAI_API_KEY")
     monkeypatch.delenv("TEAMLAB_KEYCHAIN_SERVICE", raising=False)
     runner = FakeRunner("keychain-test-secret\n")
     assert load_provider_key(frozenset(), runner=runner, platform="darwin") == "keychain"
@@ -488,7 +489,8 @@ def test_provider_key_reads_keychain_without_shell(monkeypatch):
 
 def test_provider_key_reads_secret_tool_on_linux(monkeypatch):
     from teamlab.config import load_provider_key
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "placeholder")  # so teardown restores state
+    monkeypatch.delenv("OPENAI_API_KEY")
     monkeypatch.setenv("TEAMLAB_KEYCHAIN_SERVICE", "custom.svc")
     runner = FakeRunner("linux-test-secret")
     assert load_provider_key(frozenset(), runner=runner, platform="linux") == "keychain"
@@ -509,7 +511,8 @@ def test_provider_key_from_dotenv_is_flagged(monkeypatch, capsys):
                                      FakeRunner(raises=subprocess.TimeoutExpired("x", 5)), FakeRunner("a\nb\n"), FakeRunner("  \n")])
 def test_provider_key_lookup_failure_is_a_miss(monkeypatch, failure):
     from teamlab.config import load_provider_key
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "placeholder")
+    monkeypatch.delenv("OPENAI_API_KEY")
     assert load_provider_key(frozenset(), runner=failure, platform="darwin") == "none"
     assert "OPENAI_API_KEY" not in __import__("os").environ
 
@@ -539,3 +542,12 @@ def test_run_started_records_key_source(tmp_path):
     with c.store.connect() as db:
         row = db.execute("SELECT detail FROM events WHERE run_id=? AND kind='run.started'", (c.run_id,)).fetchone()
     assert json.loads(row[0])["provider_key_source"] == "keychain"
+
+
+def test_non_model_command_never_consults_the_credential_store(tmp_path, monkeypatch):
+    import teamlab.config
+    def forbidden(*args, **kwargs):
+        raise AssertionError("credential store consulted")
+    monkeypatch.setattr(teamlab.config, "load_provider_key", forbidden)
+    monkeypatch.chdir(tmp_path)
+    assert main(["fixture", "--output", str(tmp_path / "f.csv"), "--rows", "20"]) == 0
