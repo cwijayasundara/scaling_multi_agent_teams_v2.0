@@ -231,6 +231,16 @@ def parser():
     trace.add_argument("--root", required=True)
     trace.add_argument("--run-id", required=True)
     trace.add_argument("--span", help="Span or operation id; prints its path to the root, nearest first")
+    ack = sub.add_parser("ack", help="Acknowledge alerts as the operator; recorded with your user name")
+    ack.add_argument("--root", required=True)
+    ack.add_argument("--run-id", required=True)
+    target = ack.add_mutually_exclusive_group(required=True)
+    target.add_argument("--alert-seq", type=int)
+    target.add_argument("--all-open", action="store_true", help="Acknowledge every alert not yet acknowledged")
+    ack.add_argument("--note", default="")
+    metrics = sub.add_parser("metrics", help="Print alert dwell-time and coverage metrics for a run, or the whole root")
+    metrics.add_argument("--root", required=True)
+    metrics.add_argument("--run-id")
     bench = sub.add_parser("benchmark")
     bench.add_argument("--root", default="runs/benchmark")
     bench.add_argument("--output", default="reports/offline-benchmark.json")
@@ -354,6 +364,28 @@ def main(argv=None):
                 triager = RuleTriage()
             created = triage_run(store, args.run_id, triager)
             print(json.dumps({'triaged_alerts': len(created), 'dispositions': created}, indent=2))
+            return 0
+        if args.command in ('ack', 'metrics'):
+            from . import metrics
+            from .triage import ALERT_KINDS
+            if not Path(args.root).is_dir():
+                raise ValueError(f"run root not found: {args.root}")
+            store = Store(Path(args.root), database_url=os.environ.get('TEAMLAB_DATABASE_URL'))
+            if args.command == 'metrics':
+                store_run = args.run_id and store.run(args.run_id)
+                print(json.dumps(metrics.alert_metrics(store, args.run_id) if store_run else metrics.fleet_metrics(store), indent=2))
+                return 0
+            import getpass
+            store.run(args.run_id)
+            if args.all_open:
+                done = store.alert_acks(args.run_id)
+                seqs = [a['seq'] for a in store.events_of_kinds(args.run_id, ALERT_KINDS) if a['seq'] not in done]
+            else:
+                seqs = [args.alert_seq]
+            by = getpass.getuser()
+            for seq in seqs:
+                metrics.acknowledge(store, args.run_id, seq, by=by, note=args.note)
+            print(json.dumps({'acknowledged': seqs, 'acknowledged_by': by}))
             return 0
         if args.command == 'trace':
             from .tracing import chain, trace_tree

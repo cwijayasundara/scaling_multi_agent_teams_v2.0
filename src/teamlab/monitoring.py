@@ -50,6 +50,9 @@ def server_for(store: Store, token: str, port=8765):
                 if parsed.path == "/runs":
                     with store.connect() as db:
                         payload = {"runs": [dict(r) for r in db.execute("SELECT * FROM runs ORDER BY created DESC LIMIT 200")]}
+                elif parsed.path == "/metrics":
+                    from .metrics import fleet_metrics
+                    payload = fleet_metrics(store)
                 elif parsed.path == "/health":
                     payload = {"status": "ok", "profile": "local-trusted-tools", "read_only": True}
                 elif len(parts) in (2, 3) and parts[0] == "runs":
@@ -64,6 +67,9 @@ def server_for(store: Store, token: str, port=8765):
                         payload = (snapshot if parts[2] == "snapshot" else review)(store, run_id)
                     elif parts[2] == "triage":
                         payload = {"dispositions": store.triage_dispositions(run_id)}
+                    elif parts[2] == "metrics":
+                        from .metrics import alert_metrics
+                        payload = alert_metrics(store, run_id)
                     elif parts[2] == "trace":
                         from .tracing import trace_tree
                         payload = trace_tree(store, run_id)

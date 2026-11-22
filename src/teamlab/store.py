@@ -42,6 +42,11 @@ CREATE TABLE IF NOT EXISTS triage_dispositions (
  run_id TEXT NOT NULL, alert_seq INTEGER NOT NULL, payload TEXT NOT NULL,
  PRIMARY KEY(run_id, alert_seq)
 );
+CREATE TABLE IF NOT EXISTS alert_acks (
+ run_id TEXT NOT NULL, alert_seq INTEGER NOT NULL, acknowledged_at REAL NOT NULL,
+ acknowledged_by TEXT NOT NULL, note TEXT NOT NULL,
+ PRIMARY KEY(run_id, alert_seq)
+);
 """
 
 
@@ -139,6 +144,32 @@ class Store:
         with self.connect() as db:
             rows = db.execute("SELECT payload FROM triage_dispositions WHERE run_id=? ORDER BY alert_seq", (run_id,)).fetchall()
         return [json.loads(r["payload"]) for r in rows]
+
+    def acknowledge_alert(self, run_id: str, alert_seq: int, by: str, note: str, alert_kinds) -> dict:
+        """Check the target and record its acknowledgement and event in one transaction."""
+        with self.transaction() as db:
+            row = db.execute("SELECT kind FROM events WHERE run_id=? AND seq=?", (run_id, alert_seq)).fetchone()
+            if row is None:
+                raise ValueError("unknown alert")
+            if row["kind"] not in alert_kinds:
+                raise ValueError("not an alert")
+            if db.execute("SELECT 1 FROM alert_acks WHERE run_id=? AND alert_seq=?", (run_id, alert_seq)).fetchone():
+                raise ValueError("already acknowledged")
+            now = time.time()
+            db.execute("INSERT INTO alert_acks(run_id,alert_seq,acknowledged_at,acknowledged_by,note) VALUES (?,?,?,?,?)",
+                       (run_id, alert_seq, now, by, note))
+            self.event(db, run_id, "operator", "alert.acknowledged",
+                       {"alert_seq": alert_seq, "acknowledged_by": by, "note": note})
+        return {"run_id": run_id, "alert_seq": alert_seq, "acknowledged_at": now, "acknowledged_by": by, "note": note}
+
+    def alert_acks(self, run_id: str) -> dict[int, dict]:
+        with self.connect() as db:
+            rows = db.execute("SELECT * FROM alert_acks WHERE run_id=?", (run_id,)).fetchall()
+        return {r["alert_seq"]: dict(r) for r in rows}
+
+    def recent_run_ids(self, limit: int = 200) -> list[str]:
+        with self.connect() as db:
+            return [r["id"] for r in db.execute("SELECT id FROM runs ORDER BY created DESC LIMIT ?", (limit,))]
 
     def tasks(self, run_id: str) -> list[dict]:
         with self.connect() as db:

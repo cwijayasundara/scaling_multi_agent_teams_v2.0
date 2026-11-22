@@ -225,6 +225,8 @@ class Controller:
             keys = [dict(r) for r in db.execute('SELECT agent_id,role,key_id,public_key FROM agent_keys WHERE run_id=? ORDER BY created,agent_id', (self.run_id,))]
         (out / "agents.json").write_text(canonical(keys) + "\n")
         (out / "trace.json").write_text(canonical(trace_tree(self.store, self.run_id)) + "\n")
+        from .metrics import alert_metrics
+        (out / "alert_metrics.json").write_text(canonical(alert_metrics(self.store, self.run_id)) + "\n")
         from . import dlp
         summaries, redacted_files, summary_hits = {}, [], []
         for name, text in self.model_summaries.items():
