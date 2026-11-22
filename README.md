@@ -50,5 +50,9 @@ The run prints its `run_id` first and its `artifacts` folder last. Results are i
 | `issues.jsonl` | Every excluded row and why |
 | `sources.json` | The Python each agent wrote and ran in OpenShell |
 | `events.jsonl` | Full audit trail of every agent action |
+| `agents.json` | Each agent's role and registered Ed25519 public key, for checking signed audit records |
+| `dlp.json` | What the output filter found and which exported files it redacted |
 
 In the UI, open the run to replay the timeline, inspect each agent and see the evidence checks.
+
+Every alert also gets an automated first-pass disposition. Run `teamlab triage --root runs/openshell --run-id RUN_ID` to record and print it (add `--model` for the tool-free model triager, which needs a budget), or read `GET /runs/RUN_ID/triage` from the monitoring API. Triage only recommends; the operator decides whether to restart.

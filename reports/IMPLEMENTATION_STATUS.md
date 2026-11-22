@@ -1,6 +1,6 @@
 # Implementation status
 
-14 November 2026. These are measured local results and explicit open gates, not a claim that the original experiment or its deployment has been reproduced.
+22 November 2026 (validation section refreshed after the Zero Trust Foundation work; the priority table dates from 14 November 2026). These are measured local results and explicit open gates, not a claim that the original experiment or its deployment has been reproduced.
 
 ## Delivered against the five priorities
 
@@ -14,8 +14,10 @@
 
 ## Validation
 
-- Backend, re-run 14 November 2026: **83 passed, 3 skipped** with `TEAMLAB_TEST_POSTGRES_URL` set and `.venv/bin/python -m pytest -q`. The three skips are `tests/test_linux_execution.py`.
-- Frontend: **12 passed** with `npm test --prefix dashboard`, and the Next.js production build passed, in the earlier session. The dashboard was not changed or re-tested after the control-plane work.
+- Backend, run 22 November 2026: **148 passed, 8 skipped** with `PYTHONPATH=src .venv/bin/python -m pytest -q` (no `TEAMLAB_TEST_POSTGRES_URL`, so the Postgres and opt-in guest tests are among the skips). The 14 November figure was 83 passed, 3 skipped with Postgres set.
+- Frontend, run 22 November 2026: **12 passed** with `npm test --prefix dashboard`, unchanged. The Next.js production build was not re-run.
+- Zero Trust Foundation checks, 22 November 2026: `make demo`, `make replay`, `make collaborate` and `make attack` all exited 0 offline. `teamlab verify-audit --root runs/scripted` returned `verified_records: 28, verified_signatures: 28` (70 and 70 for `runs/collaboration`). `teamlab verify-bundle` on `runs/scripted/artifacts/d0239bcda3888f9efb3be73d` returned `passed: true`, 10 artifacts checked. The attack demo stopped the run, dispatched no forbidden action, and triage recommended `keep_stopped` (`likely_true_positive`, high confidence). The scripted bundle's `dlp.json` had no findings. `verify-bundle` checks hash integrity and recomputation only, not an authenticated signature.
+- Zero Trust Foundation controls added (per-agent Ed25519 identity and signed audit records, 5-minute credentials with rotation, provider key from the OS credential store, gateway output filter and export redaction, first-pass alert triage) are scored against the eBook tiers in [architecture.md](../architecture.md#zero-trust-tier-scorecard). Still below Foundation: behaviour baselines, and resource boundaries in the default trusted-tools mode. A static `OPENAI_API_KEY` in `.env` is still accepted and only warns.
 - Standalone SDK collaboration smoke run completed: `4a0c6c9c64fc5ef23972b273`, under `runs/collaboration-demo/artifacts/`.
 - Live model calls were made later under explicit caps. They are recorded in [live-roundtrip.json](live-roundtrip.json), [live-tool-monitor.json](live-tool-monitor.json), [live-one-worker.json](live-one-worker.json), [security-development.json](security-development.json), and [security-holdout.json](security-holdout.json). No Linux VM was started. The archive check used loopback MinIO, not AWS.
 
