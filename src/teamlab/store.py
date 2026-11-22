@@ -119,9 +119,12 @@ class Store:
         return [{**dict(r), "detail": json.loads(r["detail"])} for r in rows]
 
     def events_through(self, run_id: str, seq: int, limit: int) -> list[dict]:
-        """The most recent `limit` events at or before `seq`, oldest first."""
+        """The most recent `limit` non-span events at or before `seq`, oldest first.
+
+        span.* events are trace structure, not activity; they would dilute the window.
+        """
         with self.connect() as db:
-            rows = db.execute("SELECT * FROM events WHERE run_id=? AND seq<=? ORDER BY seq DESC LIMIT ?", (run_id, seq, limit)).fetchall()
+            rows = db.execute("SELECT * FROM events WHERE run_id=? AND seq<=? AND kind NOT LIKE ? ORDER BY seq DESC LIMIT ?", (run_id, seq, 'span.%', limit)).fetchall()
         return [{**dict(r), "detail": json.loads(r["detail"])} for r in reversed(rows)]
 
     def triaged_seqs(self, run_id: str) -> set[int]:

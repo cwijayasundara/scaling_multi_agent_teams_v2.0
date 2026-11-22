@@ -190,3 +190,117 @@ def test_bundle_contains_trace(controller):
     run_span = next(s for s in trace['spans'] if s['name'] == 'run')
     assert run_span['status'] == 'ok'
     assert validate_bundle(out)['passed']
+
+
+def _denying_monitor(action_name):
+    from teamlab.security import RuleMonitor
+
+    class Deny(RuleMonitor):
+        name = "deny-test-v1"
+
+        def evaluate(self, identity, action, args, context):
+            return "PAUSE" if action == action_name else "ALLOW"
+    return Deny()
+
+
+def test_denied_action_is_traced_under_its_parent(controller):
+    from teamlab.security import RunStopped
+    controller.gateway.monitors = [_denying_monitor('post_note')]
+    with span(controller.store, controller.run_id, 'outer', 'controller', parent=None) as outer:
+        controller.progress(controller.lead)
+        with pytest.raises(RunStopped):
+            controller.note(controller.worker_tokens[0], 'hello')
+    denied = next(e for e in controller.store.events(controller.run_id) if e['kind'] == 'action.denied')
+    op_id = denied['detail']['operation_id']
+    assert denied['detail']['trace'] == {'trace_id': controller.run_id, 'span_id': op_id, 'parent_id': outer}
+    ops = {o['span_id']: o for o in trace_tree(controller.store, controller.run_id)['operations']}
+    assert ops[op_id]['status'] == 'denied' and ops[op_id]['parent_id'] == outer
+    assert ops[op_id]['action'] == 'post_note' and ops[op_id]['agent_id'] == 'worker-0'
+    assert [o['status'] for o in ops.values() if o['action'] == 'get_progress'] == ['committed']
+    assert [p.get('name') or p['action'] for p in chain(controller.store, controller.run_id, op_id)] == ['post_note', 'outer']
+
+
+def test_profile_and_output_filter_denials_carry_trace(controller):
+    from teamlab.security import RunStopped
+    for i in range(10):
+        controller.note(controller.worker_tokens[0], f'progress {i}')
+    with pytest.raises(RunStopped):
+        controller.note(controller.worker_tokens[0], 'one too many')
+    denied = [e for e in controller.store.events(controller.run_id) if e['kind'] == 'action.denied']
+    assert len(denied) == 1 and denied[0]['detail']['trace']['span_id'] == denied[0]['detail']['operation_id']
+
+
+def test_failed_actions_are_traced_and_reach_triage_context(controller):
+    from teamlab.security import RunStopped
+    from teamlab.triage import RuleTriage, triage_run
+    cred = controller.worker_tokens[0]
+    fence = controller.claim(cred)['fence']
+    controller.calculate(cred, fence)
+    for _ in range(3):
+        with pytest.raises(SecurityError, match='does not match the owned calculation receipt'):
+            controller.submit(cred, fence, '0' * 64)
+    with pytest.raises(RunStopped):
+        controller.inspect(cred, fence)
+    events = controller.store.events(controller.run_id)
+    failed = [e for e in events if e['kind'] == 'action.failed']
+    assert len(failed) == 3
+    for e in failed:
+        d = e['detail']
+        assert d['action'] == 'submit_result' and d['error'] == 'SecurityError'
+        assert 'does not match' not in json.dumps(d)  # type name only, never the message
+        assert d['trace'] == {'trace_id': controller.run_id, 'span_id': d['operation_id'], 'parent_id': None}
+    # The rolled-back action was never committed.
+    assert not any(e['kind'] == 'action.authorized' and e['detail']['action'] == 'submit_result' for e in events)
+    ops = {o['span_id']: o for o in trace_tree(controller.store, controller.run_id)['operations']}
+    assert [ops[e['detail']['operation_id']]['status'] for e in failed] == ['failed'] * 3
+    created = triage_run(controller.store, controller.run_id, RuleTriage())
+    pause = next(d for d in created if d['alert_kind'] == 'run.paused')
+    assert {e['seq'] for e in failed} <= set(pause['query']['events_examined'])
+    assert 'action.failed' not in {d['alert_kind'] for d in created}
+
+
+def test_trace_tree_reads_parent_from_signed_request(controller):
+    with controller.store.transaction() as db:
+        controller.store.event(db, controller.run_id, 'worker-0', 'action.authorized', {
+            'operation_id': 'op-signed', 'agent_id': 'worker-0', 'action': 'get_progress', 'time': 1.0,
+            'request': {'parent_id': 'sp-signed'}, 'trace': {'trace_id': controller.run_id, 'span_id': 'op-signed', 'parent_id': 'sp-unsigned'}})
+        controller.store.event(db, controller.run_id, 'worker-0', 'action.authorized', {
+            'operation_id': 'op-legacy', 'agent_id': 'worker-0', 'action': 'get_progress', 'time': 1.0,
+            'trace': {'trace_id': controller.run_id, 'span_id': 'op-legacy', 'parent_id': 'sp-legacy'}})
+    ops = {o['span_id']: o for o in trace_tree(controller.store, controller.run_id)['operations']}
+    assert ops['op-signed']['parent_id'] == 'sp-signed'
+    assert ops['op-legacy']['parent_id'] == 'sp-legacy'
+
+
+@pytest.mark.parametrize('field', ['span_id', 'trace_id'])
+def test_trace_ids_must_match_signed_request(controller, field):
+    controller.run_scripted()
+    path = controller.store.root / 'audit.jsonl'
+    _rewrite(path, 2, lambda r: r['trace'].__setitem__(field, 'forged'))
+    with pytest.raises(SecurityError, match='differs from signed request'):
+        verify_journal_signatures(path, controller.store)
+
+
+def test_monitor_and_triage_context_exclude_spans(controller):
+    from teamlab.security import RuleMonitor, RunStopped
+    from teamlab.triage import RuleTriage, triage_run
+    seen = []
+
+    class Recorder(RuleMonitor):
+        name = "recorder-v1"
+
+        def evaluate(self, identity, action, args, context):
+            seen.append([e['kind'] for e in context])
+            return "PAUSE" if action == 'post_note' else "ALLOW"
+
+    controller.gateway.monitors = [Recorder()]
+    with span(controller.store, controller.run_id, 'outer', 'controller', parent=None):
+        with span(controller.store, controller.run_id, 'inner', 'controller'):
+            controller.progress(controller.lead)
+        with pytest.raises(RunStopped):
+            controller.note(controller.worker_tokens[0], 'hello')
+    assert seen and all(kinds and not any(k.startswith('span.') for k in kinds) for kinds in seen)
+    spans = {e['seq'] for e in controller.store.events(controller.run_id) if e['kind'].startswith('span.')}
+    assert spans
+    for d in triage_run(controller.store, controller.run_id, RuleTriage()):
+        assert d['query']['events_examined'] and not spans & set(d['query']['events_examined'])

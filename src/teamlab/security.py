@@ -372,6 +372,7 @@ class Gateway:
         envelope = {"operation_id": operation_id, "run_id": who.run_id, "agent_id": who.agent_id,
             "action": action, "args_hash": digest(args), "epoch": who.epoch, "issued_at": time.time(),
             "parent_id": parent_id}
+        trace = {"trace_id": who.run_id, "span_id": operation_id, "parent_id": parent_id}
         signature = token.sign(envelope)
         registered = self._public_keys.get(token.key_id)
         if registered is None or registered[0] != who.run_id or not verify_signature(registered[1], envelope, signature):
@@ -385,7 +386,8 @@ class Gateway:
                 "kinds": sorted({h["kind"] for h in hits}), "fields": sorted({h["field"] for h in hits})}
             with self.store.transaction() as db:
                 self.store.event(db, who.run_id, who.agent_id, "action.denied", {
-                    "action": action, "args_hash": digest(args), "verdicts": [verdict]})
+                    "operation_id": operation_id, "action": action, "args_hash": digest(args),
+                    "verdicts": [verdict], "trace": trace})
             reason = f"{self.output_filter_name}: BLOCK on {who.agent_id}/{action}"
             self.store.stop(who.run_id, reason, "STOPPED")
             raise RunStopped(f"output filter stopped the entire team: {reason}")
@@ -394,12 +396,15 @@ class Gateway:
             verdict = {"monitor": PROFILE_MONITOR, "verdict": "PAUSE", **breach}
             with self.store.transaction() as db:
                 self.store.event(db, who.run_id, who.agent_id, "action.denied", {
-                    "action": action, "args_hash": digest(args), "verdicts": [verdict]})
+                    "operation_id": operation_id, "action": action, "args_hash": digest(args),
+                    "verdicts": [verdict], "trace": trace})
             reason = f"{PROFILE_MONITOR}: PAUSE on {who.agent_id}/{action}"
             self.store.stop(who.run_id, reason, "PAUSED")
             raise RunStopped(f"behaviour profile paused the entire team: {reason}")
         with self.store.connect() as context_db:
-            context_rows = context_db.execute('SELECT * FROM events WHERE run_id=? ORDER BY seq DESC LIMIT 256', (who.run_id,)).fetchall()
+            # Spans are structure, not activity: keep them out of the monitor's window.
+            # The pattern is a parameter: a literal % would break the PostgreSQL adapter.
+            context_rows = context_db.execute('SELECT * FROM events WHERE run_id=? AND kind NOT LIKE ? ORDER BY seq DESC LIMIT 256', (who.run_id, 'span.%')).fetchall()
         context = [{**dict(row), 'detail': json.loads(row['detail'])} for row in reversed(context_rows)]
         verdicts = []
         try:
@@ -422,8 +427,8 @@ class Gateway:
                     self.profiles.record_failure(who.agent_id)
                     with self.store.transaction() as db:
                         self.store.event(db, who.run_id, who.agent_id, "action.denied", {
-                            "action": action, "args_hash": digest(args), "verdicts": verdicts,
-                        })
+                            "operation_id": operation_id, "action": action, "args_hash": digest(args),
+                            "verdicts": verdicts, "trace": trace})
                     reason = f"{monitor.name}: {verdict} on {who.agent_id}/{action}"
                     self.store.stop(who.run_id, reason, "STOPPED" if verdict == "BLOCK" else "PAUSED")
                     raise RunStopped(f"security monitor stopped or paused the entire team: {reason}")
@@ -431,7 +436,7 @@ class Gateway:
                 "action": action, "args_hash": digest(args), "epoch": who.epoch,
                 "request": envelope, "key_id": token.key_id, "signature": signature,
                 "verdicts": verdicts, "time": time.time(), "policy_version": "role-scope-board-v2",
-                "trace": {"trace_id": who.run_id, "span_id": operation_id, "parent_id": parent_id},
+                "trace": dict(trace),
                 "arguments_summary": {key: value for key, value in args.items() if key in ("text", "shard", "fence", "result_hash", "candidate_hash", "task_id", "source_hash", "title", "partitions")}}
             self.journal.append(record)  # Refuse dispatch if the audit sink is unavailable.
             if self.archive:
@@ -445,32 +450,43 @@ class Gateway:
         # Check the run epoch in the same database transaction as all durable
         # action effects. Operator stop (including another process) uses the
         # same write lock. No stale result can commit after revocation.
-        with self.store.transaction() as db:
-            run = self.store.lock_run(db, who.run_id)
-            if run["state"] != "RUNNING" or run["epoch"] != who.epoch or time.time() >= run["deadline"]:
-                raise RunStopped("dispatch permit revoked")
-            limits = db.execute('SELECT * FROM run_limits WHERE run_id=?', (who.run_id,)).fetchone()
-            if run["calls"] >= (limits['tool_calls'] if limits else 400):
-                # Raise after committing the paused state, below.
-                db.execute("UPDATE runs SET state='PAUSED',epoch=epoch+1,reason='action budget' WHERE id=?", (who.run_id,))
-                self.store.event(db, who.run_id, who.agent_id, "run.paused", {"reason": "action budget"})
-                exhausted = True
-                result = None
-            else:
-                exhausted = False
-                db.execute("UPDATE runs SET calls=calls+1 WHERE id=?", (who.run_id,))
-                self.store.event(db, who.run_id, who.agent_id, "action.authorized", record)
-                with tracing.active(operation_id):
-                    try:
-                        result = handler(db, who)
-                    except RunStopped:
-                        raise
-                    except Exception:
-                        self.profiles.record_failure(who.agent_id)  # the transaction rolls back
-                        raise
-                self.store.event(db, who.run_id, who.agent_id, "action.committed", {
-                    "operation_id": operation_id, "action": action, "result_hash": digest(result),
-                })
+        failed = None
+        try:
+            with self.store.transaction() as db:
+                run = self.store.lock_run(db, who.run_id)
+                if run["state"] != "RUNNING" or run["epoch"] != who.epoch or time.time() >= run["deadline"]:
+                    raise RunStopped("dispatch permit revoked")
+                limits = db.execute('SELECT * FROM run_limits WHERE run_id=?', (who.run_id,)).fetchone()
+                if run["calls"] >= (limits['tool_calls'] if limits else 400):
+                    # Raise after committing the paused state, below.
+                    db.execute("UPDATE runs SET state='PAUSED',epoch=epoch+1,reason='action budget' WHERE id=?", (who.run_id,))
+                    self.store.event(db, who.run_id, who.agent_id, "run.paused", {"reason": "action budget"})
+                    exhausted = True
+                    result = None
+                else:
+                    exhausted = False
+                    db.execute("UPDATE runs SET calls=calls+1 WHERE id=?", (who.run_id,))
+                    self.store.event(db, who.run_id, who.agent_id, "action.authorized", record)
+                    with tracing.active(operation_id):
+                        try:
+                            result = handler(db, who)
+                        except RunStopped:
+                            raise
+                        except Exception as exc:
+                            self.profiles.record_failure(who.agent_id)  # the transaction rolls back
+                            failed = type(exc).__name__
+                            raise
+                    self.store.event(db, who.run_id, who.agent_id, "action.committed", {
+                        "operation_id": operation_id, "action": action, "result_hash": digest(result),
+                    })
+        except Exception:
+            if failed is not None:
+                # The rollback removed action.authorized; record the failure in its
+                # own transaction. Only the type: exception messages may carry data.
+                with self.store.transaction() as db:
+                    self.store.event(db, who.run_id, who.agent_id, "action.failed", {
+                        "operation_id": operation_id, "action": action, "error": failed, "trace": dict(trace)})
+            raise
         if exhausted:
             raise RunStopped("action budget exhausted")
         tracing.committed(operation_id)

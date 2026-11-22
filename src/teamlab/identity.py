@@ -109,7 +109,9 @@ def verify_journal_signatures(journal_path: Path, store) -> int:
                 raise SecurityError("audit signature verification failed: record differs from signed request")
             # Records from before request tracing carry neither field.
             if ("parent_id" in envelope or "trace" in record) and (
-                    not isinstance(record.get("trace"), dict) or record["trace"].get("parent_id") != envelope.get("parent_id")):
+                    not isinstance(record.get("trace"), dict) or record["trace"].get("parent_id") != envelope.get("parent_id")
+                    or record["trace"].get("span_id") != envelope.get("operation_id")
+                    or record["trace"].get("trace_id") != envelope.get("run_id")):
                 raise SecurityError("audit signature verification failed: record differs from signed request")
             if not verify_signature(row["public_key"], envelope, signature):
                 raise SecurityError("audit signature verification failed: bad signature")

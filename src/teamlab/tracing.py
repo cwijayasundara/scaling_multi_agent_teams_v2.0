@@ -1,8 +1,9 @@
 """Request traces: spans for agent turns, linked to the gateway operations they cause.
 
 A trace is a run. Spans are recorded as span.started/span.ended events; each
-authorized gateway operation is itself a node whose parent is the span (or
-operation) active when it was requested. The parent id is in the signed request.
+gateway operation (committed, denied or failed) is itself a node whose parent is
+the span (or operation) active when it was requested. For committed operations
+the parent id is read from the signed request.
 """
 
 import secrets
@@ -13,6 +14,7 @@ from typing import Iterator
 _current_span: ContextVar[str | None] = ContextVar("teamlab_current_span", default=None)
 _last_operation: ContextVar[str | None] = ContextVar("teamlab_last_operation", default=None)
 _INHERIT = object()
+_UNCOMMITTED = {"action.denied": "denied", "action.failed": "failed"}
 
 
 def current_span() -> str | None:
@@ -71,8 +73,16 @@ def trace_tree(store, run_id: str) -> dict:
         elif event["kind"] == "span.ended" and detail["span_id"] in spans:
             spans[detail["span_id"]].update(ended=event["created"], status=detail["status"])
         elif event["kind"] == "action.authorized":
+            request = detail.get("request")
+            # Older records carry no signed request; fall back to the unsigned trace.
+            parent = request.get("parent_id") if isinstance(request, dict) else (detail.get("trace") or {}).get("parent_id")
+            operations.append({"span_id": detail["operation_id"], "parent_id": parent, "agent_id": detail["agent_id"],
+                "action": detail["action"], "time": detail["time"], "status": "committed"})
+        elif event["kind"] in _UNCOMMITTED and "operation_id" in detail:
+            # Denials before this field existed carry no operation id and stay out of the tree.
             operations.append({"span_id": detail["operation_id"], "parent_id": (detail.get("trace") or {}).get("parent_id"),
-                "agent_id": detail["agent_id"], "action": detail["action"], "time": detail["time"]})
+                "agent_id": event["agent_id"], "action": detail["action"], "time": event["created"],
+                "status": _UNCOMMITTED[event["kind"]]})
     return {"trace_id": run_id, "spans": list(spans.values()), "operations": operations}
 
 
