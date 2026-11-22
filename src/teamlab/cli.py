@@ -65,7 +65,7 @@ def execute(args):
     client = None
     if args.mode == "live":
         from openai import OpenAI
-        client_args = {'timeout': 45, 'max_retries': 0, 'http_client': budget.client()}
+        client_args = {'timeout': 45, 'max_retries': 0, 'http_client': budget.client(verify=plane.client_ssl_context() if plane is not None else None)}
         if plane is not None:
             client_args['api_key'] = plane.model_token
             client_args['base_url'] = plane.model_base
@@ -352,6 +352,7 @@ def main(argv=None):
                 plane = PlaneClient(Path(args.control_plane))
                 plane.preflight()
                 separate_runtime_credentials()
+                client_args['http_client'] = budget.client(verify=plane.client_ssl_context())
                 client_args['api_key'] = plane.model_token
                 client_args['base_url'] = plane.model_base
             elif not os.environ.get('OPENAI_API_KEY'):

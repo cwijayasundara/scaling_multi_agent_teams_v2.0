@@ -16,6 +16,7 @@ from teamlab.controller import Controller
 from teamlab.fixture import generate
 from teamlab.grader import grade, reference
 from teamlab.plane import Plane, forbidden_for, grade_request, rpc, separate_runtime_credentials, serve_unix
+from teamlab.plane_tls import issue_plane_pki, server_context
 from teamlab.security import SecurityError
 
 
@@ -43,6 +44,7 @@ def upstream():
         yield server
     finally:
         server.shutdown()
+        server.server_close()
 
 
 @pytest.fixture
@@ -65,12 +67,12 @@ def test_services_hide_foreign_credentials_and_grade_remotely(plane, tmp_path):
     expected = reference(controller.records)
     assert client.grade(controller.records, expected) == grade(controller.records, expected)
     assert controller.grade_candidate(controller.records, expected)['passed']
-    health = rpc(client.meta['grader_socket'], client.meta['grader_token'], {'operation': 'health'})
+    health = client.health('grader')
     assert health['holds_openai_key'] is False and health['holds_archive_key'] is False
     proxy = client.proxy_health()
     assert proxy['holds_openai_key'] is True and proxy['holds_archive_key'] is False
     with pytest.raises(SecurityError):
-        rpc(client.meta['grader_socket'], 'not-the-token', {'operation': 'health'})
+        rpc(client.meta['grader_socket'], 'not-the-token', {'operation': 'health'}, tls=client.tls('grader'))
 
 
 def test_model_proxy_injects_its_own_key_and_rejects_other_models(plane):
@@ -79,14 +81,15 @@ def test_model_proxy_injects_its_own_key_and_rejects_other_models(plane):
     body = json.dumps({'model': 'gpt-6-luna', 'input': 'ping', 'max_output_tokens': 16}).encode()
     request = urllib.request.Request(client.model_base + '/responses', data=body, method='POST', headers={
         'Authorization': 'Bearer ' + client.model_token, 'Content-Type': 'application/json'})
-    with urllib.request.urlopen(request, timeout=5) as response:
+    with urllib.request.urlopen(request, timeout=5, context=client.client_ssl_context()) as response:
         assert response.status == 200
     assert upstream.seen == 'Bearer sk-plane-test'
     rejected = urllib.request.Request(client.model_base + '/responses', data=json.dumps({'model': 'other', 'max_output_tokens': 16}).encode(), method='POST', headers={
         'Authorization': 'Bearer ' + client.model_token, 'Content-Type': 'application/json'})
     with pytest.raises(urllib.error.HTTPError) as error:
-        urllib.request.urlopen(rejected, timeout=5)
+        urllib.request.urlopen(rejected, timeout=5, context=client.client_ssl_context())
     assert error.value.code == 400
+    error.value.close()
 
 
 def test_integration_service_commits_exact_source_and_archive_fails_closed(plane):
@@ -134,14 +137,17 @@ def test_peer_uid_and_runtime_credential_split(tmp_path, monkeypatch):
     path.unlink(missing_ok=True)
     stop = threading.Event()
     allowed = 1 if os.geteuid() != 1 else 2
-    thread = threading.Thread(target=serve_unix, args=('grader', path, token, allowed, grade_request, forbidden_for('grader', False), stop), daemon=True)
+    pki = issue_plane_pki(tmp_path / 'pki', ('grader',))
+    context = server_context(pki['servers']['grader']['cert'], pki['servers']['grader']['key'], pki['ca'])
+    tls = {'ca': pki['ca'], 'client_cert': pki['client_cert'], 'client_key': pki['client_key'], 'service': 'grader', 'pin': pki['servers']['grader']['pin']}
+    thread = threading.Thread(target=serve_unix, args=('grader', path, token, allowed, grade_request, forbidden_for('grader', False), stop, context), daemon=True)
     thread.start()
     try:
         deadline = time.time() + 5
         while not path.exists() and time.time() < deadline:
             time.sleep(0.05)
         with pytest.raises(SecurityError):
-            rpc(path, token, {'operation': 'health'})
+            rpc(path, token, {'operation': 'health'}, tls=tls)
     finally:
         stop.set()
         path.unlink(missing_ok=True)

@@ -2,12 +2,15 @@
 
 The default local profile still runs the gateway, grader, model client and Git
 integration in one process. This module is the separated profile: each privilege
-is a process with its own environment, a peer-UID check and a secret token.
+is a process with its own environment, a peer-UID check, mutual TLS with a
+pinned server key (see plane_tls) and a secret token.
 Same-user deployment is weaker than distinct UIDs. A missing service fails
 closed. These processes do not prove kernel isolation or cloud immutability.
 """
 import argparse
+import collections
 import hashlib
+import http.client
 import json
 import os
 import platform
@@ -22,6 +25,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -30,6 +34,7 @@ from .analytics import canonical
 from .archive import DirectoryArchive, configured_archive
 from .artifacts import commit_verified_source
 from .grader import grade
+from .plane_tls import check_pin, client_context, hostname, issue_plane_pki, server_context
 from .security import SecurityError
 
 FOREIGN = ('OPENAI_API_KEY', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'TEAMLAB_DATABASE_URL')
@@ -108,25 +113,31 @@ def expected_flags(service, archive_credentials):
     }
 
 
-def rpc(path, token, payload, timeout=30):
+def rpc(path, token, payload, timeout=30, *, tls):
+    """Call a service over mutual TLS. tls holds ca, client_cert, client_key, service and pin."""
     body = {**payload, 'token': token}
-    with socket.socket(socket.AF_UNIX) as sock:
-        sock.settimeout(timeout)
+    context = client_context(tls['client_cert'], tls['client_key'], tls['ca'])
+    with socket.socket(socket.AF_UNIX) as raw:
+        raw.settimeout(timeout)
         try:
-            sock.connect(str(path))
+            raw.connect(str(path))
+            sock = context.wrap_socket(raw, server_hostname=hostname(tls['service']))
         except OSError as exc:
             raise SecurityError('control-plane service unavailable') from exc
-        send_frame(sock, body)
-        try:
-            result = receive_frame(sock)
-        except (OSError, SecurityError, ValueError) as exc:
-            raise SecurityError('control-plane service unavailable') from exc
+        with sock:
+            check_pin(sock, tls['pin'])
+            try:
+                send_frame(sock, body)
+                result = receive_frame(sock)
+            except (OSError, SecurityError, ValueError) as exc:
+                raise SecurityError('control-plane service unavailable') from exc
     if not isinstance(result, dict) or not result.get('ok'):
         raise SecurityError('control-plane service refused the request')
     return result
 
 
-def serve_unix(service, path, token, allowed_uid, handler, forbidden, stop):
+def serve_unix(service, path, token, allowed_uid, handler, forbidden, stop, context):
+    """Serve length-prefixed frames: peer-UID check, then mutual TLS (context), then the token."""
     present = [name for name in forbidden if name in os.environ]
     if present:
         raise SecurityError('service inherited a foreign credential')
@@ -135,28 +146,48 @@ def serve_unix(service, path, token, allowed_uid, handler, forbidden, stop):
         raise SecurityError('service socket already exists')
     directory = socket_path.parent
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    refusals = collections.Counter()
+    lock = threading.Lock()
 
-    def client_thread(client):
-        reason = 'request'
-        with client:
+    def refuse(reason):
+        with lock:
+            refusals[reason] += 1
+
+    def client_thread(raw):
+        with raw:
             try:
-                if peer_uid(client) != allowed_uid:
-                    reason = 'peer'
-                    raise SecurityError('peer rejected')
-                client.settimeout(30)
-                request = receive_frame(client)
-                if not token_ok(request.get('token'), token):
-                    reason = 'token'
-                    raise SecurityError('token rejected')
-                if request.get('operation') == 'health':
-                    send_frame(client, {'ok': True, 'service': service, **credential_flags()})
-                    return
-                send_frame(client, handler(request))
-            except Exception:
+                uid = peer_uid(raw)
+            except (OSError, SecurityError):
+                uid = None
+            if uid != allowed_uid:
+                refuse('peer')
+                return
+            try:
+                raw.settimeout(30)
+                client = context.wrap_socket(raw, server_side=True)
+            except (OSError, SecurityError):
+                # A failed handshake is answered by closing the connection.
+                refuse('tls')
+                return
+            reason = 'request'
+            with client:
                 try:
-                    send_frame(client, {'ok': False, 'error': 'service refused the request', 'reason': reason})
-                except OSError:
-                    pass
+                    request = receive_frame(client)
+                    if not token_ok(request.get('token'), token):
+                        reason = 'token'
+                        raise SecurityError('token rejected')
+                    if request.get('operation') == 'health':
+                        with lock:
+                            counted = dict(refusals)
+                        send_frame(client, {'ok': True, 'service': service, 'refusals': counted, **credential_flags()})
+                        return
+                    send_frame(client, handler(request))
+                except Exception:
+                    refuse(reason)
+                    try:
+                        send_frame(client, {'ok': False, 'error': 'service refused the request', 'reason': reason})
+                    except OSError:
+                        pass
 
     with socket.socket(socket.AF_UNIX) as server:
         server.bind(str(socket_path))
@@ -297,11 +328,26 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         raise urllib.error.HTTPError(req.full_url, code, msg, headers, fp)
 
 
-def serve_proxy(token, upstream, stop):
+def serve_proxy(token, upstream, stop, context):
     if 'OPENAI_API_KEY' not in os.environ or any(name in os.environ for name in forbidden_for('model-proxy', False)):
         raise SecurityError('model proxy credential boundary rejected')
     from http.server import ThreadingHTTPServer
-    server = ThreadingHTTPServer(('127.0.0.1', 0), ProxyHandler)
+
+    class TLSServer(ThreadingHTTPServer):
+        def finish_request(self, request, client_address):
+            # Handshake in the per-connection thread so a stalled client cannot block accept.
+            request.settimeout(30)
+            try:
+                request = context.wrap_socket(request, server_side=True)
+            except OSError:
+                return
+            with request:
+                super().finish_request(request, client_address)
+
+        def handle_error(self, request, client_address):
+            return
+
+    server = TLSServer(('127.0.0.1', 0), ProxyHandler)
     server.token = token
     server.api_key = os.environ['OPENAI_API_KEY']
     server.upstream = upstream
@@ -317,14 +363,14 @@ def serve_proxy(token, upstream, stop):
 
 
 class RemoteArchive:
-    def __init__(self, path, token):
-        self.path, self.token = path, token
+    def __init__(self, path, token, tls):
+        self.path, self.token, self.tls = path, token, tls
 
     def preflight(self):
-        rpc(self.path, self.token, {'operation': 'preflight'})
+        rpc(self.path, self.token, {'operation': 'preflight'}, tls=self.tls())
 
     def append(self, record):
-        rpc(self.path, self.token, {'operation': 'append', 'record': record})
+        rpc(self.path, self.token, {'operation': 'append', 'record': record}, tls=self.tls())
 
 
 class PlaneClient:
@@ -335,7 +381,19 @@ class PlaneClient:
             raise SecurityError('control-plane descriptor must be private')
         self.model_base = self.meta.get('model_base')
         self.model_token = self.meta.get('model_token')
-        self.archive = RemoteArchive(self.meta['gateway_socket'], self.meta['gateway_token'])
+        self.archive = RemoteArchive(self.meta['gateway_socket'], self.meta['gateway_token'], lambda: self.tls('gateway'))
+
+    def tls(self, service):
+        tls = self.meta['tls']
+        return {'ca': tls['ca'], 'client_cert': tls['client_cert'], 'client_key': tls['client_key'],
+            'service': service, 'pin': tls['pins'][service]}
+
+    def client_ssl_context(self):
+        tls = self.meta['tls']
+        return client_context(tls['client_cert'], tls['client_key'], tls['ca'])
+
+    def health(self, service, timeout=30):
+        return rpc(self.meta[service + '_socket'], self.meta[service + '_token'], {'operation': 'health'}, timeout, tls=self.tls(service))
 
     def _status(self, service):
         path = Path(self.meta['status'])
@@ -351,8 +409,7 @@ class PlaneClient:
     def preflight(self):
         for service in ('grader', 'integration', 'gateway'):
             self._require(service)
-            result = rpc(self.meta[service + '_socket'], self.meta[service + '_token'], {'operation': 'health'})
-            self._flags(service, result)
+            self._flags(service, self.health(service))
         self._require('model-proxy')
         self._flags('model-proxy', self.proxy_health())
 
@@ -363,16 +420,29 @@ class PlaneClient:
 
     def grade(self, records, candidate):
         self._require('grader')
-        return rpc(self.meta['grader_socket'], self.meta['grader_token'], {'operation': 'grade', 'records': records, 'candidate': candidate})['verdict']
+        return rpc(self.meta['grader_socket'], self.meta['grader_token'], {'operation': 'grade', 'records': records, 'candidate': candidate}, tls=self.tls('grader'))['verdict']
 
     def integrate(self, request):
         self._require('integration')
-        return rpc(self.meta['integration_socket'], self.meta['integration_token'], {'operation': 'integrate', **request})['commit']
+        return rpc(self.meta['integration_socket'], self.meta['integration_token'], {'operation': 'integrate', **request}, tls=self.tls('integration'))['commit']
 
-    def proxy_health(self):
-        request = urllib.request.Request(self.model_base.removesuffix('/v1') + '/health', headers={'Authorization': 'Bearer ' + self.model_token})
-        with urllib.request.urlopen(request, timeout=3) as response:
+    def proxy_health(self, timeout=3):
+        base = urllib.parse.urlsplit(self.model_base)
+        if base.scheme != 'https':
+            raise SecurityError('model proxy must use TLS')
+        connection = http.client.HTTPSConnection(base.hostname, base.port, timeout=timeout, context=self.client_ssl_context())
+        try:
+            connection.connect()
+            check_pin(connection.sock, self.meta['tls']['pins']['model-proxy'])
+            connection.request('GET', '/health', headers={'Authorization': 'Bearer ' + self.model_token})
+            response = connection.getresponse()
+            if response.status != 200:
+                raise SecurityError('model proxy preflight failed')
             result = json.loads(response.read())
+        except (OSError, http.client.HTTPException, ValueError) as exc:
+            raise SecurityError('model proxy unavailable') from exc
+        finally:
+            connection.close()
         if not result.get('ok') or result.get('service') != 'model-proxy':
             raise SecurityError('model proxy preflight failed')
         return result
@@ -417,8 +487,10 @@ class Plane:
                 env['TEAMLAB_AUDIT_ENDPOINT'] = self.audit_endpoint
         return env
 
-    def _spawn(self, service, token_path, socket_path=None):
-        command = [sys.executable, '-m', 'teamlab.plane', 'serve', '--service', service, '--token-file', str(token_path), '--uid', str(self.allowed_uid)]
+    def _spawn(self, service, token_path, pki, socket_path=None):
+        server = pki['servers'][service]
+        command = [sys.executable, '-m', 'teamlab.plane', 'serve', '--service', service, '--token-file', str(token_path), '--uid', str(self.allowed_uid),
+            '--cert', server['cert'], '--key', server['key'], '--ca', pki['ca']]
         if socket_path is not None:
             command += ['--socket', str(socket_path)]
         if service == 'integration':
@@ -458,21 +530,24 @@ class Plane:
         tokens = {name: secrets.token_urlsafe(32) for name in SERVICES}
         sockets = {}
         try:
+            pki = issue_plane_pki(self.socket_dir / 'pki', SERVICES)
             for service in ('grader', 'integration', 'gateway'):
                 token_path = self.socket_dir / (service + '.token')
                 token_path.write_text(tokens[service])
                 os.chmod(token_path, 0o600)
                 sockets[service] = self.socket_dir / (service + '.sock')
-                self._spawn(service, token_path, sockets[service])
+                self._spawn(service, token_path, pki, sockets[service])
             token_path = self.socket_dir / 'model-proxy.token'
             token_path.write_text(tokens['model-proxy'])
             os.chmod(token_path, 0o600)
-            ready = self._spawn('model-proxy', token_path)
+            ready = self._spawn('model-proxy', token_path, pki)
             descriptor = {
                 'grader_socket': str(sockets['grader']), 'grader_token': tokens['grader'],
                 'integration_socket': str(sockets['integration']), 'integration_token': tokens['integration'],
                 'gateway_socket': str(sockets['gateway']), 'gateway_token': tokens['gateway'],
-                'model_base': 'http://127.0.0.1:%d/v1' % ready['port'], 'model_token': tokens['model-proxy'],
+                'model_base': 'https://127.0.0.1:%d/v1' % ready['port'], 'model_token': tokens['model-proxy'],
+                'tls': {'ca': pki['ca'], 'client_cert': pki['client_cert'], 'client_key': pki['client_key'],
+                    'pins': {name: server['pin'] for name, server in pki['servers'].items()}},
                 'telemetry': str(self.telemetry), 'status': str(self.status_path),
                 'archive_credentials': bool(self.audit_bucket),
             }
@@ -501,7 +576,7 @@ class Plane:
             if service == 'model-proxy':
                 result = self.client.proxy_health()
             else:
-                result = rpc(self.client.meta[service + '_socket'], self.client.meta[service + '_token'], {'operation': 'health'}, timeout=3)
+                result = self.client.health(service, timeout=3)
             flags = {key: bool(result.get(key)) for key in ('holds_openai_key', 'holds_archive_key', 'holds_database_url')}
             ok = flags == expected_flags(service, bool(self.audit_bucket))
             reason = None if ok else 'credential-boundary'
@@ -558,8 +633,9 @@ def run_service(args):
     stop = threading.Event()
     archive_credentials = bool(args.audit_bucket)
     forbidden = forbidden_for(args.service, archive_credentials)
+    context = server_context(args.cert, args.key, args.ca)
     if args.service == 'model-proxy':
-        serve_proxy(token, args.upstream, stop)
+        serve_proxy(token, args.upstream, stop, context)
         return
     if args.service == 'grader':
         handler = grade_request
@@ -574,7 +650,7 @@ def run_service(args):
         handler = gateway_request(archive)
         if archive is not None:
             archive.preflight()
-    serve_unix(args.service, args.socket, token, args.uid, handler, forbidden, stop)
+    serve_unix(args.service, args.socket, token, args.uid, handler, forbidden, stop, context)
 
 
 def parser():
@@ -585,6 +661,9 @@ def parser():
     serve.add_argument('--socket')
     serve.add_argument('--token-file', required=True)
     serve.add_argument('--uid', type=int, required=True)
+    serve.add_argument('--cert', required=True)
+    serve.add_argument('--key', required=True)
+    serve.add_argument('--ca', required=True)
     serve.add_argument('--repo')
     serve.add_argument('--archive-dir')
     serve.add_argument('--audit-bucket')

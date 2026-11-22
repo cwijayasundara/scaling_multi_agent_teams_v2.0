@@ -134,10 +134,11 @@ class AgentTeam:
         if self.replay:
             return ReplayModel(actor=actor, workers=self.controller.workers)
         kwargs = {}
-        if getattr(self.controller, "spend_budget", None):
-            kwargs["http_client"] = self.controller.spend_budget.client()
-            kwargs["http_async_client"] = self.controller.spend_budget.async_client()
         plane = getattr(self.controller, "plane", None)
+        verify = plane.client_ssl_context() if plane is not None else None
+        if getattr(self.controller, "spend_budget", None):
+            kwargs["http_client"] = self.controller.spend_budget.client(verify=verify)
+            kwargs["http_async_client"] = self.controller.spend_budget.async_client(verify=verify)
         if plane is not None:
             kwargs["api_key"] = plane.model_token
             kwargs["base_url"] = plane.model_base

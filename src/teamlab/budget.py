@@ -44,15 +44,16 @@ class SpendBudget:
                 raise SecurityError('experiment request/spend reservation budget exhausted')
             self.calls+=1;self.reserved+=reserve
 
-    def client(self):
+    def client(self, verify=None):
+        """verify: an ssl.SSLContext (e.g. the control plane's client context); None keeps httpx defaults."""
         import httpx
-        return httpx.Client(timeout=45,event_hooks={'request':[self.reserve_request]})
+        return httpx.Client(timeout=45,verify=True if verify is None else verify,event_hooks={'request':[self.reserve_request]})
 
-    def async_client(self):
+    def async_client(self, verify=None):
         import httpx
         async def reserve(request):
             self.reserve_request(request)
-        return httpx.AsyncClient(timeout=45,event_hooks={'request':[reserve]})
+        return httpx.AsyncClient(timeout=45,verify=True if verify is None else verify,event_hooks={'request':[reserve]})
 
     def report(self):
         return {'requests_reserved':self.calls,'reserved_usd':str(self.reserved),'limit_usd':str(self.limit),
