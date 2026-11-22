@@ -193,3 +193,30 @@ def test_credential_ttl_is_configurable(tmp_path):
     generate(source, rows=20, seed=3)
     c = Controller(tmp_path / "run", source, workers=1, credential_ttl=120)
     assert 60 < c.lead.expires_at - time.time() <= 120
+
+
+def test_lookup_racing_a_rotation_still_resolves(controller):
+    # The caller reads the old token, then another thread rotates it before
+    # the session lookup runs. The legitimate call must still succeed.
+    gateway, cred = controller.gateway, controller.lead
+    old, fired = cred.token, []
+
+    class RacingSessions(dict):
+        def get(self, key, default=None):
+            if key == old and not fired:
+                fired.append(True)
+                gateway.refresh(cred)  # rotates and retires the old token now
+            return super().get(key, default)
+
+    gateway._sessions = RacingSessions(gateway._sessions)
+    assert controller.progress(cred)['tasks']
+    assert fired and cred.token != old and old not in gateway._sessions
+
+
+def test_concurrent_direct_refreshes_are_serialized(controller):
+    cred = controller.lead
+    with ThreadPoolExecutor(4) as pool:
+        list(pool.map(lambda _: controller.gateway.refresh(cred), range(4)))
+    assert sum(e['kind'] == 'credential.refreshed' for e in controller.store.events(controller.run_id)) == 4
+    assert controller.gateway.identity(cred).agent_id == 'coordinator'
+    assert sum(s.identity.agent_id == 'coordinator' for s in controller.gateway._sessions.values()) == 1

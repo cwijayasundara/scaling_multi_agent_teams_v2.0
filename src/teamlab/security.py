@@ -248,8 +248,13 @@ class Gateway:
         return session
 
     def identity(self, cred: Credential) -> Identity:
-        session = self._session(cred)
-        if session.expires_at - time.time() >= self.refresh_margin:
+        try:
+            session = self._session(cred)
+        except SecurityError:
+            if not isinstance(cred, Credential):
+                raise
+            session = None  # Possibly read a token mid-rotation; resolve again under the lock.
+        if session is not None and session.expires_at - time.time() >= self.refresh_margin:
             return session.identity
         with cred._lock:
             # Another thread holding this credential may have rotated it already.
@@ -257,7 +262,7 @@ class Gateway:
             if session.expires_at - time.time() >= self.refresh_margin:
                 return session.identity
             try:
-                self.refresh(cred)
+                self._refresh_locked(cred)
             except CredentialExpired:
                 if session.expires_at <= time.time():
                     raise
@@ -267,6 +272,12 @@ class Gateway:
 
     def refresh(self, cred: Credential) -> None:
         """Rotate the bearer token after the holder proves possession of its registered key."""
+        if not isinstance(cred, Credential):
+            raise SecurityError("invalid service identity")
+        with cred._lock:
+            self._refresh_locked(cred)
+
+    def _refresh_locked(self, cred: Credential) -> None:
         session = self._session(cred)
         who = session.identity
         old_token = cred.token
@@ -286,9 +297,11 @@ class Gateway:
         with self.store.transaction() as db:
             self.store.event(db, who.run_id, who.agent_id, "credential.refreshed", {
                 "agent_id": who.agent_id, "key_id": cred.key_id, "expires_at": expires_at})
+        # Publish the new session before retiring the old one so no reader
+        # holding either token ever misses.
         self._sessions[token] = _Session(who, session.key_id, expires_at)
-        del self._sessions[old_token]
         cred._rotate(token, expires_at)
+        del self._sessions[old_token]
 
     def active(self, token: Credential):
         who = self.identity(token)
