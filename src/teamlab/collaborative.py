@@ -10,6 +10,8 @@ from .artifacts import Artifacts
 from .security import RunStopped
 from .tracing import span
 
+# Scheduler round budget; behaviour profiles are sized against it.
+MAX_ROUNDS = 32
 
 class BoardReplay(ReplayModel):
     """Reproducible board protocol test, never evidence of autonomous planning."""
@@ -177,7 +179,7 @@ class CollaborativeTeam(AgentTeam):
         c = self.controller
         try:
             with span(c.store, c.run_id, 'run', 'controller', parent=None):
-                for round_number in range(32):
+                for round_number in range(MAX_ROUNDS):
                     with span(c.store, c.run_id, f'round-{round_number}', 'controller') as round_span:
                         self.round_number = round_number
                         self.turn(self.lead, c.lead, 'Plan or reprioritize work; publish if the report root is complete.', round_span)

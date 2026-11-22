@@ -11,11 +11,14 @@ from teamlab.security import RuleMonitor, RunStopped
 from teamlab.triage import RuleTriage, triage_run
 
 SHIPPED = {"version": "profiles-v1", "roles": {
-    "coordinator": {"default_max_calls_per_action": 40, "max_calls_per_action": {"post_note": 20, "record_plan": 10, "publish": 2, "publish_work": 2},
+    "coordinator": {"default_max_calls_per_action": 40, "max_calls_per_action": {"post_note": 20, "record_plan": 10, "publish": 2, "publish_work": 2,
+                                                                                 "list_tasks": 128, "read_notes": 128, "create_task": 160, "split_task": 160,
+                                                                                 "integrate_task": 160, "integrate_artifact": 160},
                     "max_calls_per_minute": 120, "max_failures": 5},
     "worker": {"default_max_calls_per_action": 40, "max_calls_per_action": {"post_note": 10, "claim_task": 3, "write_artifact": 6, "run_artifact": 6},
                "max_calls_per_minute": 60, "max_failures": 3},
-    "verifier": {"default_max_calls_per_action": 80, "max_calls_per_action": {"post_note": 10, "verify_task": 160, "verify_artifact": 160},
+    "verifier": {"default_max_calls_per_action": 80, "max_calls_per_action": {"post_note": 10, "verify_task": 160, "verify_artifact": 160,
+                                                                              "record_verification": 160},
                  "max_calls_per_minute": 120, "max_failures": 5}}}
 
 
@@ -177,3 +180,42 @@ def test_legitimate_runs_do_not_trip_profiles(tmp_path):
     for c in (scripted, fixed, collaborative):
         assert c.store.run(c.run_id)["state"] == "COMPLETED"
         assert profile_verdicts(c) == []
+
+
+def test_profiles_cover_scheduler_bounds():
+    """Drive the most calls the collaborative scheduler and its replay protocol make per role.
+
+    Bounds come from code constants, so the JSON cannot drift below them. Calls
+    are spaced a full window apart: this checks per-action limits, not the rate rule.
+    """
+    from teamlab.board import Board
+    from teamlab.collaborative import MAX_ROUNDS
+    from teamlab.profiles import WINDOW_SECONDS
+    profiles = load_profiles()
+    now = 0.0
+
+    def drive(agent, role, action, times):
+        nonlocal now
+        for _ in range(times):
+            now += WINDOW_SECONDS
+            assert profiles.check(agent, role, action, now) is None, (role, action)
+
+    rounds, tasks = MAX_ROUNDS, Board.max_tasks
+    # Coordinator: one list_tasks in its own turn and one by the scheduler each round,
+    # notes read each turn, one root, at most one split per task, and the scheduler
+    # integrates every verified task (authored runs: artifact then task).
+    drive("coordinator", "coordinator", "list_tasks", 2 * rounds)
+    drive("coordinator", "coordinator", "read_notes", rounds)
+    drive("coordinator", "coordinator", "create_task", 1)
+    drive("coordinator", "coordinator", "split_task", tasks)
+    drive("coordinator", "coordinator", "integrate_task", tasks)
+    drive("coordinator", "coordinator", "integrate_artifact", tasks)
+    drive("coordinator", "coordinator", "publish_work", 1)
+    # Worker: each turn reads notes and claims, and works at most one task.
+    for action in ("read_notes", "list_tasks", "claim_work", "inspect_work", "calculate_work", "submit_task"):
+        drive("worker-0", "worker", action, rounds)
+    # Verifier: lists each turn and verifies every task once (authored: reproduce, then record).
+    drive("verifier", "verifier", "list_tasks", rounds)
+    drive("verifier", "verifier", "read_notes", rounds)
+    for action in ("verify_task", "verify_artifact", "record_verification"):
+        drive("verifier", "verifier", action, tasks)
