@@ -294,7 +294,8 @@ class Gateway:
                     "agent_id": who.agent_id, "key_id": cred.key_id, "reason": "refresh signature invalid"})
             raise CredentialExpired("credential expired; refresh requires the registered key")
         run = self.store.run(who.run_id)
-        if run["state"] != "RUNNING" or run["epoch"] != who.epoch or time.time() >= run["deadline"]:
+        # The deadline is active()'s to enforce: it pauses the run with a reason.
+        if run["state"] != "RUNNING" or run["epoch"] != who.epoch:
             raise RunStopped("credential refresh revoked")
         token, expires_at = secrets.token_urlsafe(32), time.time() + self.credential_ttl
         with self.store.transaction() as db:

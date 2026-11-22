@@ -23,9 +23,9 @@ class Clock:
     def __init__(self, base):
         self.base, self.offset = base, 0.0
 
-    def advance(self, seconds):
+    def advance(self, seconds, past_deadline=False):
         self.offset += seconds
-        assert self.offset < 1200, "stay inside the run deadline"
+        assert past_deadline or self.offset < 1200, "stay inside the run deadline"
 
     def __call__(self):
         return self.base + self.offset
@@ -220,3 +220,12 @@ def test_concurrent_direct_refreshes_are_serialized(controller):
     assert sum(e['kind'] == 'credential.refreshed' for e in controller.store.events(controller.run_id)) == 4
     assert controller.gateway.identity(cred).agent_id == 'coordinator'
     assert sum(s.identity.agent_id == 'coordinator' for s in controller.gateway._sessions.values()) == 1
+
+
+def test_deadline_through_refresh_window_pauses_the_run(controller, clock):
+    cred = controller.worker_tokens[0]
+    clock.advance(1201, past_deadline=True)
+    with pytest.raises(RunStopped, match="run deadline exceeded"):
+        controller.claim(cred)
+    run = controller.store.run(controller.run_id)
+    assert (run["state"], run["reason"]) == ("PAUSED", "run deadline exceeded")
