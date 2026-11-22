@@ -34,15 +34,27 @@ def test_scenario_outcome_is_derived_from_run_state(tmp_path, scenario):
     assert r['id'] == scenario
     assert r['prevented'] is True
     assert r['detected'] is True or r['containment'] == 'refused-start'
-    if r['run_id']:
-        assert r['triaged'] is True
+    assert r['triaged'] is (True if r['evidence'] else None)
 
 
 def test_gap_scenarios_are_still_prevented(tmp_path):
     # The xfails above are detection gaps, not prevention gaps.
     for scenario in GAPS:
         r = run_scenario(scenario, tmp_path / scenario)
-        assert r['prevented'] is True and r['detected'] is False and r['evidence'] == []
+        assert r['prevented'] is True and r['detected'] is False and r['evidence'] == [] and r['triaged'] is None
+
+
+def test_setup_stop_is_not_reported_as_containment(tmp_path):
+    r = run_scenario('stale-result-after-stop', tmp_path / 'stale')
+    assert r['containment'] == 'none' and r['triaged'] is None
+    assert 'Before the attack (setup): run.stopped' in r['notes']
+
+
+def test_alerting_scenario_reports_triage_and_its_own_containment(tmp_path):
+    r = run_scenario('restricted-agent-escalation', tmp_path / 'escalation')
+    # The setup strike restricted the agent; the attack's write attempt quarantined it.
+    assert r['triaged'] is True and r['evidence'] and r['containment'] == 'agent'
+    assert 'Before the attack (setup): agent.restricted' in r['notes']
 
 
 def test_prevented_is_false_when_the_effect_happens(tmp_path, monkeypatch):
@@ -108,7 +120,7 @@ def test_cli_writes_json_and_matrix(tmp_path, capsys, monkeypatch):
 
 
 def _result(sid, prevented=True, detected=True, evidence=(7,), run_id='r1', containment='team'):
-    return {'id': sid, 'prevented': prevented, 'detected': detected, 'triaged': True, 'containment': containment,
+    return {'id': sid, 'prevented': prevented, 'detected': detected, 'triaged': True if evidence else None, 'containment': containment,
             'run_id': run_id, 'evidence': list(evidence), 'dwell_s': 0.1 if evidence else None, 'notes': f'notes for {sid}'}
 
 

@@ -102,20 +102,25 @@ def _shard_state(c: Controller, shard: int) -> str:
 def _outcome(scenario_id: str, c: Controller, start_seq: int, started: float, prevented: bool, notes: str,
              error: Exception | None = None) -> dict:
     """Measure detection, triage and containment for an attack that began after start_seq."""
-    alerts = [a for a in c.store.events_of_kinds(c.run_id, ALERT_KINDS) if a["seq"] > start_seq]
+    every = c.store.events_of_kinds(c.run_id, ALERT_KINDS)
+    alerts = [a for a in every if a["seq"] > start_seq]
     triage_run(c.store, c.run_id, RuleTriage())
-    every_alert = {a["seq"] for a in c.store.events_of_kinds(c.run_id, ALERT_KINDS)}
-    run = c.store.run(c.run_id)
-    if run["state"] in ("STOPPED", "PAUSED"):
+    # Containment counts only state changes after the attack step, never the scenario's own setup.
+    team_kinds, agent_kinds = ("run.stopped", "run.paused"), ("agent.restricted", "agent.quarantined")
+    if any(a["kind"] in team_kinds for a in alerts):
         containment = "team"
-    elif any(s["state"] != "ACTIVE" for s in agent_states(c.store, c.run_id).values()):
+    elif any(a["kind"] in agent_kinds for a in alerts):
         containment = "agent"
     else:
         containment = "none"
+    prior = sorted({a["kind"] for a in every if a["seq"] <= start_seq and a["kind"] in team_kinds + agent_kinds})
+    if prior:
+        notes = f"{notes} Before the attack (setup): {', '.join(prior)}."
     if error is not None:
         notes = f"{notes} Raised {type(error).__name__}: {error}."
+    triaged = {a["seq"] for a in every} <= c.store.triaged_seqs(c.run_id) if alerts else None
     return {"id": scenario_id, "prevented": bool(prevented), "detected": bool(alerts) or error is not None,
-            "triaged": every_alert <= c.store.triaged_seqs(c.run_id), "containment": containment,
+            "triaged": triaged, "containment": containment,
             "run_id": c.run_id, "evidence": [a["seq"] for a in alerts],
             "dwell_s": round(alerts[0]["created"] - started, 6) if alerts else None, "notes": notes}
 
@@ -281,7 +286,7 @@ def tampered_policy_config(root: Path) -> dict:
     if error is not None:
         notes = f"{notes} Raised {type(error).__name__}: {error}."
     return {"id": "tampered-policy-config", "prevented": error is not None and runs == 0, "detected": error is not None,
-            "triaged": False, "containment": "refused-start" if error is not None else "none", "run_id": None,
+            "triaged": None, "containment": "refused-start" if error is not None else "none", "run_id": None,
             "evidence": [], "dwell_s": round(time.time() - started, 6) if error is not None else None, "notes": notes}
 
 
@@ -355,7 +360,7 @@ def plane_untrusted_client(root: Path) -> dict:
     finally:
         supervisor.close()
     detected = counted > 0  # the grader recorded the refused handshakes, not only the client's error
-    return {"id": "plane-untrusted-client", "prevented": len(errors) == 2, "detected": detected, "triaged": False,
+    return {"id": "plane-untrusted-client", "prevented": len(errors) == 2, "detected": detected, "triaged": None,
             "containment": "none", "run_id": None, "evidence": [],
             "dwell_s": round(time.time() - started, 6) if detected else None,
             "notes": f"{len(errors)} of 2 foreign-CA connections refused ({'; '.join(str(e) for e in errors)}); "
@@ -392,8 +397,8 @@ def run_scenario(scenario_id: str, root: Path) -> dict:
 def summarize(results: list[dict]) -> dict:
     return {"scenarios": len(results), "prevented": sum(r["prevented"] for r in results),
             "detected": sum(r["detected"] for r in results),
-            # Only scenarios that raised alerts can be triaged.
-            "triaged": sum(bool(r["triaged"] and r["evidence"]) for r in results),
+            # triaged is None when a scenario raised no alerts.
+            "triaged": sum(r["triaged"] is True for r in results),
             "not_prevented": sorted(r["id"] for r in results if not r["prevented"]),
             "not_detected": sorted(r["id"] for r in results if not r["detected"])}
 
@@ -430,7 +435,7 @@ def render_matrix(report: dict, catalogue: dict) -> str:
             reason = "not run (slow; use --include-slow)" if s.get("slow") else "not run"
             lines.append(f"| {name} | {_refs(s['owasp_agentic'])} | {_refs(s['mitre'])} | {reason} | — | — | — |")
             continue
-        triaged = "n/a (no alerts)" if not r["evidence"] else _mark(r["triaged"])
+        triaged = "n/a (no alerts)" if r["triaged"] is None else _mark(r["triaged"])
         lines.append(f"| {name} | {_refs(s['owasp_agentic'])} | {_refs(s['mitre'])} | {_mark(r['prevented'])} | "
                      f"{_mark(r['detected'])} | {triaged} | {r['containment']} |")
     summary = report["summary"]
