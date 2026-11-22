@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .analytics import analyze, canonical, combine, digest
+from .config_signing import verify_all
 from .fixture import read_records, shard_for
 from .profiles import load_profiles
 from .security import CREDENTIAL_TTL_SECONDS, Gateway, RunStopped, SecurityError
@@ -34,7 +35,10 @@ class Controller:
         self.workers = workers
         self.run_id = secrets.token_hex(12)
         self.mode = mode
+        # Refuse tampered or unsigned configs before any run row exists.
+        config_signers = verify_all()
         profiles = load_profiles()
+        config_signers["behavior_profiles.json"] = profiles.signer
         with self.store.transaction() as db:
             db.execute("INSERT INTO runs(id,state,epoch,input_hash,workers,mode,created,deadline) VALUES (?,'RUNNING',1,?,?,?,?,?)", (
                 self.run_id, self.input_hash, workers, mode, time.time(), time.time() + 1200,
@@ -47,6 +51,7 @@ class Controller:
                 "execution_profile": "trusted-tools-only; no model-written code or host shell",
                 "provider_key_source": provider_key_source,
                 "behavior_profile": {"version": profiles.version, "sha256": profiles.sha256},
+                "config_signers": config_signers,
             })
         self.gateway = Gateway(self.store, self.run_id, monitors=monitors, credential_ttl=credential_ttl, profiles=profiles)
         self.lead = self.gateway.issue("coordinator", "coordinator")

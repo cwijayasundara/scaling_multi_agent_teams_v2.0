@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import time
@@ -32,6 +33,31 @@ def credential_store(monkeypatch):
         os.environ.pop("OPENAI_API_KEY", None)
     else:
         os.environ["OPENAI_API_KEY"] = original
+
+
+class ConfigSigner:
+    """A temporary signing key trusted alongside the packaged signers."""
+
+    def __init__(self, key_path, entry):
+        self.key_path, self.key_id = key_path, entry["key_id"]
+
+    def sign(self, path):
+        from teamlab.config_signing import sign_file
+        return sign_file(path, self.key_path)
+
+
+@pytest.fixture
+def config_signer(tmp_path_factory, monkeypatch):
+    # Tests never use the developer's signing key: they sign with a temp key
+    # that a temp TEAMLAB_CONFIG_SIGNERS file trusts next to the packaged ones.
+    from teamlab.config_signing import PACKAGE_DIR, generate_key
+    directory = tmp_path_factory.mktemp("config-signer")
+    entry = generate_key(directory / "signing.key", label="test")
+    packaged = json.loads((PACKAGE_DIR / "config_signers.json").read_text())["signers"]
+    signers = directory / "config_signers.json"
+    signers.write_text(json.dumps({"signers": packaged + [entry]}))
+    monkeypatch.setenv("TEAMLAB_CONFIG_SIGNERS", str(signers))
+    return ConfigSigner(directory / "signing.key", entry)
 
 
 class Clock:

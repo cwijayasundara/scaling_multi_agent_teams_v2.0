@@ -15,7 +15,9 @@ import tempfile
 import threading
 import time
 import uuid
+from pathlib import Path
 
+from .config_signing import read_verified
 from .security import SecurityError
 
 # Pinned together: a gateway upgrade must re-run `teamlab qualify-host`.
@@ -31,16 +33,10 @@ DEADLINE_SECONDS = 45
 SCRUBBED_ENV = ('OPENAI_API_KEY', 'TEAMLAB_DATABASE_URL', 'AWS_ACCESS_KEY_ID',
                 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN')
 
-# No network_policies: OpenShell denies all egress. hard_requirement makes the
-# sandbox fail to start rather than run without Landlock.
-POLICY = """version: 1
-filesystem_policy:
-  include_workdir: false
-  read_only: [/bin, /usr, /lib, /etc, /proc, /dev/urandom]
-  read_write: [/tmp, /dev/null]
-landlock:
-  compatibility: hard_requirement
-"""
+# Signed OpenShell sandbox policy, verified before every sandbox is created.
+# It has no network_policies, so OpenShell denies all egress; hard_requirement
+# makes the sandbox fail to start rather than run without Landlock.
+POLICY_PATH = Path(__file__).with_name('sandbox_policy.yaml')
 
 # Runs inside the guest as the unprivileged sandbox user. One request per VM.
 RUNNER = r'''
@@ -136,8 +132,9 @@ class OpenShellBroker:
             pass
 
     def _create(self, name, who):
-        with tempfile.NamedTemporaryFile('w', suffix='.yaml', delete=False) as policy:
-            policy.write(POLICY)
+        verified, _ = read_verified(POLICY_PATH)
+        with tempfile.NamedTemporaryFile('wb', suffix='.yaml', delete=False) as policy:
+            policy.write(verified)
         try:
             done = self._run('sandbox', 'create', '--name', name, '--from', self.image, '--policy', policy.name,
                 '--no-auto-providers', '--no-tty', '--detach', '--restart-policy', 'never',

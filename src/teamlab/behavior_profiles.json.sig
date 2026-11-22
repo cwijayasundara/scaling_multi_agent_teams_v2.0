@@ -1,0 +1,1 @@
+{"alg":"ed25519","file":"behavior_profiles.json","key_id":"14a040bc32eba9e32e437d4f390eeed7","sha256":"b1f99eec1297eab310da48ed90d0b3d536c412773ccd1f472974ed87231d7b19","signature":"OFalDjgh8qcEYHJzFpUsH_628m27aM4Jkxf5Wy6-R6DTgjWrONhuepx9schrPZu4ewdRPDdLOQSvNx4HjLRpDw"}

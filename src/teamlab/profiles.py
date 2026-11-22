@@ -9,6 +9,8 @@ import threading
 from collections import deque
 from pathlib import Path
 
+from .config_signing import read_verified
+
 PROFILE_MONITOR = "behavior-profile-v1"
 DEFAULT_PATH = Path(__file__).with_name("behavior_profiles.json")
 WINDOW_SECONDS = 60
@@ -21,10 +23,13 @@ def _positive(value, where):
     return value
 
 
-def load_profiles(path: Path = DEFAULT_PATH) -> "Profiles":
-    """Parse and validate a profile file; any defect raises ValueError (fail closed)."""
+def load_profiles(path: Path | None = None) -> "Profiles":
+    """Verify, parse and validate a profile file; any defect raises ValueError (fail closed).
+
+    An unsigned or tampered file raises ConfigIntegrityError before it is parsed.
+    """
     from .security import CAPABILITIES  # security imports this module at load time
-    raw = Path(path).read_bytes()
+    raw, signer = read_verified(Path(path) if path is not None else DEFAULT_PATH)
     data = json.loads(raw)
     if not isinstance(data, dict) or set(data) != {"version", "roles"}:
         raise ValueError("profile file needs exactly the keys version and roles")
@@ -45,14 +50,14 @@ def load_profiles(path: Path = DEFAULT_PATH) -> "Profiles":
             if action not in CAPABILITIES[role]:
                 raise ValueError(f"{role}.max_calls_per_action names {action!r}, not a {role} capability")
             _positive(limit, f"{role}.max_calls_per_action.{action}")
-    return Profiles(data["version"], hashlib.sha256(raw).hexdigest(), roles)
+    return Profiles(data["version"], hashlib.sha256(raw).hexdigest(), roles, signer)
 
 
 class Profiles:
     """In-memory counters for one gateway (one run), guarded by one lock."""
 
-    def __init__(self, version: str, sha256: str, roles: dict):
-        self.version, self.sha256, self.roles = version, sha256, roles
+    def __init__(self, version: str, sha256: str, roles: dict, signer: str):
+        self.version, self.sha256, self.roles, self.signer = version, sha256, roles, signer
         self._lock = threading.Lock()
         self._counts: dict[tuple[str, str], int] = {}
         self._calls: dict[str, deque] = {}

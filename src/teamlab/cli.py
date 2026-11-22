@@ -190,6 +190,15 @@ def parser():
             run.add_argument("--checkpoint", help="Reviewed round-boundary task checkpoint; fresh model contexts")
             run.add_argument("--run", required=True)
             run.add_argument("--reason", required=True, help="Operator's review finding; creates a clean new run")
+    config = sub.add_parser("config", help="Sign shipped config files and verify them")
+    config_sub = config.add_subparsers(dest="config_command", required=True)
+    keygen = config_sub.add_parser("keygen", help="Write a new Ed25519 signing key (0600) and print its signer entry")
+    keygen.add_argument("--out", required=True)
+    keygen.add_argument("--label", default="teamlab-dev")
+    sign = config_sub.add_parser("sign", help="Write <file>.sig for each file")
+    sign.add_argument("--key", required=True)
+    sign.add_argument("files", nargs="+")
+    config_sub.add_parser("verify", help="Verify every shipped signed config; exit 1 on any failure")
     fixture = sub.add_parser("fixture")
     fixture.add_argument("--output", required=True)
     fixture.add_argument("--rows", type=int, default=10_000)
@@ -293,6 +302,16 @@ def main(argv=None):
         dotenv_loaded = load_local_secrets()
         # Only a process that will call the model consults the OS credential store.
         args.provider_key_source = load_provider_key(dotenv_loaded) if uses_provider_key(args) else "none"
+        if args.command == "config":
+            from . import config_signing
+            if args.config_command == "keygen":
+                print(json.dumps(config_signing.generate_key(Path(args.out), args.label), indent=2))
+            elif args.config_command == "sign":
+                for name in args.files:
+                    print(config_signing.sign_file(Path(name), Path(args.key)))
+            else:
+                print(json.dumps(config_signing.verify_all(), indent=2))
+            return 0
         if args.command == 'qualify-host':
             from .qualify import write_host_report
             from .execution import OpenShellBroker

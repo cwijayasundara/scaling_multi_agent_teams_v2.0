@@ -4,6 +4,7 @@ import pytest
 
 from teamlab.agents import AgentTeam
 from teamlab.collaborative import CollaborativeTeam
+from teamlab.config_signing import ConfigIntegrityError
 from teamlab.controller import Controller
 from teamlab.fixture import generate
 from teamlab.profiles import PROFILE_MONITOR, load_profiles
@@ -41,7 +42,7 @@ def test_shipped_profiles_load_and_cover_every_role():
 
 
 @pytest.mark.parametrize("mutation", ["unknown role", "action not in capabilities", "zero limit", "missing key"])
-def test_invalid_profiles_fail_closed(tmp_path, mutation):
+def test_invalid_profiles_fail_closed(tmp_path, config_signer, mutation):
     data = json.loads(json.dumps(SHIPPED))
     if mutation == "unknown role":
         data["roles"]["auditor"] = data["roles"]["verifier"]
@@ -53,8 +54,10 @@ def test_invalid_profiles_fail_closed(tmp_path, mutation):
         del data["roles"]["verifier"]["max_calls_per_minute"]
     bad = tmp_path / "profiles.json"
     bad.write_text(json.dumps(data))
-    with pytest.raises(ValueError):
+    config_signer.sign(bad)  # signed, so the refusal comes from validation
+    with pytest.raises(ValueError) as refused:
         load_profiles(bad)
+    assert not isinstance(refused.value, ConfigIntegrityError)
 
 
 def test_shipped_file_matches_plan_values():
@@ -77,11 +80,12 @@ def test_per_action_limit_pauses_and_records_rule(controller):
         assert db.execute("SELECT count(*) FROM notes WHERE run_id=?", (controller.run_id,)).fetchone()[0] == 10
 
 
-def test_rate_limit_uses_sixty_second_window(controller, clock, tmp_path):
+def test_rate_limit_uses_sixty_second_window(controller, clock, tmp_path, config_signer):
     data = json.loads(json.dumps(SHIPPED))
     data["roles"]["coordinator"].update(default_max_calls_per_action=1000, max_calls_per_minute=60)
     path = tmp_path / "rate.json"
     path.write_text(json.dumps(data))
+    config_signer.sign(path)
     controller.gateway.profiles = load_profiles(path)
     for _ in range(60):
         clock.advance(0.01)
