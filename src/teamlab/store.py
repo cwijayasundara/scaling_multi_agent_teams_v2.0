@@ -38,6 +38,10 @@ CREATE TABLE IF NOT EXISTS agent_keys (
  key_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, agent_id TEXT NOT NULL,
  role TEXT NOT NULL, public_key TEXT NOT NULL, created REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS triage_dispositions (
+ run_id TEXT NOT NULL, alert_seq INTEGER NOT NULL, payload TEXT NOT NULL,
+ PRIMARY KEY(run_id, alert_seq)
+);
 """
 
 
@@ -101,6 +105,40 @@ class Store:
         with self.connect() as db:
             rows = db.execute("SELECT * FROM events WHERE run_id=? AND seq>? ORDER BY seq LIMIT 1000", (run_id, after)).fetchall()
         return [{**dict(r), "detail": json.loads(r["detail"])} for r in rows]
+
+    def events_of_kinds(self, run_id: str, kinds) -> list[dict]:
+        kinds = sorted(kinds)
+        marks = ",".join("?" * len(kinds))
+        with self.connect() as db:
+            rows = db.execute(f"SELECT * FROM events WHERE run_id=? AND kind IN ({marks}) ORDER BY seq", (run_id, *kinds)).fetchall()
+        return [{**dict(r), "detail": json.loads(r["detail"])} for r in rows]
+
+    def events_through(self, run_id: str, seq: int, limit: int) -> list[dict]:
+        """The most recent `limit` events at or before `seq`, oldest first."""
+        with self.connect() as db:
+            rows = db.execute("SELECT * FROM events WHERE run_id=? AND seq<=? ORDER BY seq DESC LIMIT ?", (run_id, seq, limit)).fetchall()
+        return [{**dict(r), "detail": json.loads(r["detail"])} for r in reversed(rows)]
+
+    def triaged_seqs(self, run_id: str) -> set[int]:
+        with self.connect() as db:
+            return {r["alert_seq"] for r in db.execute("SELECT alert_seq FROM triage_dispositions WHERE run_id=?", (run_id,))}
+
+    def record_triage(self, run_id: str, disposition: dict) -> bool:
+        """Store a disposition and its alert.triaged event once; never touches run state."""
+        with self.transaction() as db:
+            if db.execute("SELECT 1 FROM triage_dispositions WHERE run_id=? AND alert_seq=?", (run_id, disposition["alert_seq"])).fetchone():
+                return False
+            db.execute("INSERT INTO triage_dispositions(run_id,alert_seq,payload) VALUES (?,?,?)", (
+                run_id, disposition["alert_seq"], json.dumps(disposition, sort_keys=True, allow_nan=False)))
+            self.event(db, run_id, "triage", "alert.triaged", {
+                "alert_seq": disposition["alert_seq"], "classification": disposition["report"]["classification"],
+                "recommended_action": disposition["report"]["recommended_action"], "triager": disposition["triager"]})
+        return True
+
+    def triage_dispositions(self, run_id: str) -> list[dict]:
+        with self.connect() as db:
+            rows = db.execute("SELECT payload FROM triage_dispositions WHERE run_id=? ORDER BY alert_seq", (run_id,)).fetchall()
+        return [json.loads(r["payload"]) for r in rows]
 
     def tasks(self, run_id: str) -> list[dict]:
         with self.connect() as db:

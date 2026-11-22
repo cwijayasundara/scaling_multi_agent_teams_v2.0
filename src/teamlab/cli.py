@@ -62,6 +62,7 @@ def execute(args):
         generate(input_path, rows=args.rows, seed=args.seed, injection=args.injection)
     budget = spend_budget(args) if args.mode == "live" else None
     monitors = [RuleMonitor()]
+    client = None
     if args.mode == "live":
         from openai import OpenAI
         client_args = {'timeout': 45, 'max_retries': 0, 'http_client': budget.client()}
@@ -99,12 +100,30 @@ def execute(args):
                     from .recovery import Checkpoints
                     Checkpoints(team.board).restore(args.run, args.checkpoint, broker=broker)
                 out = team.run()
-        print(json.dumps({"run_id": c.run_id, "state": c.store.run(c.run_id)["state"], "artifacts": str(out)}), flush=True)
+        state = c.store.run(c.run_id)["state"]
+        print(json.dumps({"run_id": c.run_id, "state": state, "artifacts": str(out)}), flush=True)
+        if state != "COMPLETED":
+            triage_after_stop(c, client)
         return 0
     except BaseException:
         c.store.stop(c.run_id, "operator interruption or execution failure", "PAUSED")
         c.export()
+        triage_after_stop(c, client)
         raise
+
+
+def triage_after_stop(c, client):
+    """Record first-pass dispositions; a triage failure never masks the run's outcome."""
+    from . import triage
+    try:
+        triager = triage.ModelTriage(client) if client is not None else triage.RuleTriage()
+        print(json.dumps({"triaged_alerts": len(triage.triage_run(c.store, c.run_id, triager))}), flush=True)
+    except Exception as exc:
+        try:
+            with c.store.transaction() as db:
+                c.store.event(db, c.run_id, "triage", "triage.failed", {"error": type(exc).__name__})
+        except Exception:
+            pass
 
 
 def validate_bundle(path: Path, grader=None):
@@ -202,6 +221,11 @@ def parser():
     audit.add_argument("--root", default="runs/demo")
     attack = sub.add_parser("attack-demo")
     attack.add_argument("--root", default="runs/attack")
+    triage = sub.add_parser("triage", help="Record first-pass dispositions for a run's alerts; never changes run state")
+    budget_options(triage)
+    triage.add_argument("--root", required=True)
+    triage.add_argument("--run-id", required=True)
+    triage.add_argument("--model", action="store_true", help="Use the tool-free Luna triager; requires OPENAI_API_KEY and a spend budget")
     bench = sub.add_parser("benchmark")
     bench.add_argument("--root", default="runs/benchmark")
     bench.add_argument("--output", default="reports/offline-benchmark.json")
@@ -244,7 +268,8 @@ def main(argv=None):
         from .config import load_local_secrets, load_provider_key
         dotenv_loaded = load_local_secrets()
         # Only commands that can make model calls consult the OS credential store.
-        args.provider_key_source = load_provider_key(dotenv_loaded) if args.command in MODEL_COMMANDS else "none"
+        model_command = args.command in MODEL_COMMANDS or (args.command == "triage" and args.model)
+        args.provider_key_source = load_provider_key(dotenv_loaded) if model_command else "none"
         if args.command == 'qualify-host':
             from .qualify import write_host_report
             from .execution import OpenShellBroker
@@ -301,6 +326,20 @@ def main(argv=None):
             Path(args.output).write_text(json.dumps(result, indent=2)+'\n')
             print(json.dumps({'output': args.output, 'kind': result.get('kind', 'security-evaluation'), 'passed': result.get('passed')}))
             return 0 if result.get('passed', True) else 1
+        if args.command == 'triage':
+            from .triage import ModelTriage, RuleTriage, triage_run
+            store = Store(Path(args.root), database_url=os.environ.get('TEAMLAB_DATABASE_URL'))
+            store.run(args.run_id)
+            if args.model:
+                if not os.environ.get('OPENAI_API_KEY'):
+                    raise ValueError('model triage requires OPENAI_API_KEY in the process environment')
+                from openai import OpenAI
+                triager = ModelTriage(OpenAI(timeout=45, max_retries=0, http_client=spend_budget(args).client()))
+            else:
+                triager = RuleTriage()
+            created = triage_run(store, args.run_id, triager)
+            print(json.dumps({'triaged_alerts': len(created), 'dispositions': created}, indent=2))
+            return 0
         if args.command in ("run", "restart"):
             if args.command == "restart":
                 store = Store(Path(args.root), database_url=os.environ.get("TEAMLAB_DATABASE_URL"))
@@ -372,8 +411,10 @@ def main(argv=None):
             except SecurityError:
                 stale_rejected = True
             c.export()
+            from .triage import RuleTriage, triage_run
             result = {"run_id": c.run_id, "state": c.store.run(c.run_id)["state"],
-                "forbidden_action_dispatched": bool(dispatched), "teammate_rejected": stale_rejected}
+                "forbidden_action_dispatched": bool(dispatched), "teammate_rejected": stale_rejected,
+                "triage": [d["report"] for d in triage_run(c.store, c.run_id, RuleTriage())]}
             print(json.dumps(result, indent=2))
             return 0 if result["state"] == "STOPPED" and not dispatched and stale_rejected else 1
         return 0

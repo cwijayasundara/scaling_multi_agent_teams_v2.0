@@ -35,6 +35,10 @@ After review, `restart` creates a clean new run from the captured input rather t
 
 Keep API secrets in the process environment or a secret manager outside all model-readable inputs. Live API calls send selected synthetic data and tool results to OpenAI. Provider retention settings and local observability retention require separate review before using real data.
 
+## Alert triage
+
+After a run stops or pauses, `execute`, `attack-demo` and `teamlab triage --root R --run-id ID` record one first-pass disposition per alert (`action.denied`, `run.stopped`, `run.paused`, `credential.rejected`) in `triage_dispositions` and an `alert.triaged` event; the read-only monitoring API serves them at `GET /runs/<id>/triage`. The default triager is a deterministic rule mapping; `--model` (or live mode) uses a single tool-free, strict-schema Luna call per alert over at most 64 prior events, falls back to the rules when its evidence is not a subset of those events or the call fails, and requires a spend budget. Dispositions are recommendations with `decision_owner: human`: triage never changes run state, and containment, restart and disclosure stay with the operator. A triage failure is recorded as `triage.failed` and never replaces the run's own outcome.
+
 ## Collaboration and authored execution additions
 
 `--workflow collaborative` preserves the fixed-tool trust boundary while adding bounded task creation/splitting, readable shared notes, dynamic claims, dependency completion, independent per-task verification and round-boundary task recovery. Exact partition coverage, task ownership, leases and run epochs remain deterministic checks. Notes and task titles are untrusted data. Replay task creation is scripted and does not establish autonomous model behavior.
