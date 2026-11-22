@@ -1,0 +1,209 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Zero Trust for Agent Teams: figures</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0a0c11;--panel:#12161e;--panel2:#171c26;--line:#283041;--text:#eef0f6;--muted:#8f98ad;--violet:#8b9cff;--nv:#76b900;--red:#f87171;--amber:#fbbf24;--green:#4ade80;--blue:#60a5fa;--pink:#f472b6}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:Inter,system-ui,sans-serif}
+.fig{display:none;width:1600px;height:900px;padding:56px 64px;position:relative;overflow:hidden;background:radial-gradient(1200px 600px at 85% -10%,#1a2040 0%,transparent 60%),var(--bg)}
+.fig.on{display:block}
+.k{font-size:15px;letter-spacing:.16em;text-transform:uppercase;color:var(--violet);font-weight:600}
+h2{font-size:40px;font-weight:700;margin:8px 0 6px;letter-spacing:-.01em}
+.sub{color:var(--muted);font-size:19px;max-width:1200px}
+.mono{font-family:'JetBrains Mono',monospace}
+.foot{position:absolute;left:64px;right:64px;bottom:26px;display:flex;justify-content:space-between;color:#5d667b;font-size:14px}
+.box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+.pill{display:inline-block;font-size:13px;font-weight:600;padding:4px 10px;border-radius:99px;border:1px solid currentColor}
+svg text{font-family:Inter,system-ui,sans-serif}
+/* cover */
+#zcover{width:1920px;height:1080px;padding:0;background:#07090d}
+
+.tbl{display:grid;border:1px solid #283041;border-radius:14px;overflow:hidden}
+.th{padding:11px 14px;background:#171c26;color:#8b9cff;font-weight:700;font-size:13px;letter-spacing:.1em;text-transform:uppercase}
+.note{color:#a3abbe;font-size:14px}
+</style></head><body>
+<!-- Figures for zero-trust-agent-teams.md. Data is typed in from that paper's tables (sections 2, 4, 6, 7, 8, 9); keep the two in step. -->
+<script>
+const C={met:"#4ade80",partial:"#fbbf24",no:"#f87171",mute:"#9aa3b8",violet:"#8b9cff",blue:"#60a5fa"};
+const pill=(t,c,x='')=>'<span class="pill" style="color:'+c+';white-space:nowrap;'+x+'">'+t+'</span>';
+const cell=(x,i,extra='')=>'<div style="padding:5px 14px;border-top:1px solid #283041;display:flex;align-items:center;background:'+(i%2?'#10141b':'#0c0f15')+';'+extra+'">'+x+'</div>';
+const head=hs=>hs.map(h=>'<div class="th">'+h+'</div>').join('');
+const tile=(label,big,col,sub)=>'<div class="box"><div style="color:#8f98ad;font-size:15px">'+label+'</div><div style="font-size:46px;font-weight:800;color:'+col+'">'+big+'</div><div class="note">'+sub+'</div></div>';
+</script>
+
+<!-- ================= COVER ================= -->
+<section class="fig" id="zcover">
+<svg width="1920" height="1080" viewBox="0 0 1920 1080">
+ <defs>
+  <radialGradient id="g1" cx="72%" cy="45%" r="60%"><stop offset="0" stop-color="#22306b" stop-opacity=".9"/><stop offset="1" stop-color="#07090d" stop-opacity="0"/></radialGradient>
+  <radialGradient id="g2" cx="15%" cy="100%" r="50%"><stop offset="0" stop-color="#2b4a00" stop-opacity=".45"/><stop offset="1" stop-color="#07090d" stop-opacity="0"/></radialGradient>
+  <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse"><path d="M48 0H0V48" fill="none" stroke="#141a26" stroke-width="1"/></pattern>
+ </defs>
+ <rect width="1920" height="1080" fill="#07090d"/><rect width="1920" height="1080" fill="url(#grid)"/>
+ <rect width="1920" height="1080" fill="url(#g1)"/><rect width="1920" height="1080" fill="url(#g2)"/>
+ <g transform="translate(1400,540)">
+  <circle cx="-130" r="270" fill="#8b9cff" fill-opacity=".07" stroke="#8b9cff" stroke-width="2.5"/>
+  <circle cx="130" r="270" fill="#76b900" fill-opacity=".06" stroke="#76b900" stroke-width="2.5"/>
+  <text x="-265" y="-20" text-anchor="middle" fill="#c9d0ff" font-size="21" font-weight="700" letter-spacing="2">FABLE 5.2 POST</text>
+  <text x="-265" y="12" text-anchor="middle" fill="#8f98ad" font-size="17">contain the team</text>
+  <text x="265" y="-20" text-anchor="middle" fill="#a7e05a" font-size="21" font-weight="700" letter-spacing="2">ZERO TRUST EBOOK</text>
+  <text x="265" y="12" text-anchor="middle" fill="#8f98ad" font-size="17">15 controls, 3 tiers</text>
+  <text y="-22" text-anchor="middle" fill="#ffffff" font-size="72" font-weight="800">12</text>
+  <text y="14" text-anchor="middle" fill="#eef0f6" font-size="20" font-weight="600">guidelines</text>
+  <text y="44" text-anchor="middle" fill="#8f98ad" font-size="16" font-family="JetBrains Mono">G1 – G12</text>
+ </g>
+ <text x="110" y="330" fill="#8b9cff" font-size="22" font-weight="600" letter-spacing="5">WHITE PAPER · 22 NOVEMBER 2026</text>
+ <text x="110" y="440" fill="#ffffff" font-size="92" font-weight="800" letter-spacing="-2">Zero Trust for</text>
+ <text x="110" y="545" fill="#ffffff" font-size="92" font-weight="800" letter-spacing="-2">Agent Teams</text>
+ <text x="110" y="625" fill="#a3abbe" font-size="27">Consolidated practices for multi-agent systems that are safe</text>
+ <text x="110" y="663" fill="#a3abbe" font-size="27">to scale, checked against Secure TeamLab v1.0 and v2.0</text>
+ <text x="110" y="960" fill="#5d667b" font-size="19" font-family="JetBrains Mono">sources: Safely scaling multi-agent teams with Claude Fable 5.2 · Zero Trust for AI Agents</text>
+</svg>
+</section>
+
+<!-- ================= Z1 overlap ================= -->
+<section class="fig" id="z1" style="height:720px">
+ <p class="k">Figure 1 · Two sources</p>
+ <h2>The post and the eBook agree on structure and differ on the rest</h2>
+ <p class="sub">The post assumes the model may be misaligned. The eBook assumes an outside attacker reaches the agent.</p>
+ <div style="display:grid;grid-template-columns:1fr 1.12fr 1fr;gap:20px;margin-top:22px;font-size:15.5px">
+ <script>
+ const col=(t,c,sub,items)=>'<div class="box" style="border-color:'+c+'55;padding:18px 20px"><div style="color:'+c+';font-weight:700;font-size:14px;letter-spacing:.12em;text-transform:uppercase">'+t+'</div><div class="note" style="margin:4px 0 10px">'+sub+'</div>'+items.map(x=>'<div style="padding:6.5px 0;border-top:1px solid #283041">'+x+'</div>').join('')+'</div>';
+ document.write(
+ col("Post only","#8b9cff","What a 1,000-agent run teaches",["Shared state is a communication channel","A violation may be spread across agents","Monitors that see reasoning and cross-agent traffic","A second, action-only monitor","Red-team the monitors; report the result","A correctness authority agents cannot influence","One VM per agent, for reliability too"])+
+ col("In both","#4ade80","Same control, different names",["Enforcement outside the agent","Identity assigned, not claimed","No credentials where agents run","Deny by default, narrow tools","Isolated execution","Resource limits","Check before the action runs","Stop on detection","Review after the fact","Humans decide","Assume compromise"])+
+ col("eBook only","#76b900","What an enterprise needs",["Cryptographic per-agent identity","Short-lived tokens, mutual TLS","Attribute-based and just-in-time access","Signed configuration","Input sanitization, output filtering","Supply chain: AI-BOM, signing, vendors","Memory isolation, integrity, retention","Tamper-evident logs, request tracing","Dwell time and coverage metrics","Triage model, tabletops, emergency change","Governance and shadow AI"]));
+ </script>
+ </div>
+ <div class="foot"><span>Figure 1 · sections 2, 2.1 and 2.2</span><span>11 shared themes · 7 post only · 11 eBook only</span></div>
+</section>
+
+<!-- ================= Z2 guidelines ================= -->
+<section class="fig" id="z2" style="height:840px">
+ <p class="k">Figure 2 · Consolidated guidelines</p>
+ <h2>Twelve guidelines, each with a version that removes the path</h2>
+ <p class="sub">Ten come from both sources. Two come from the eBook alone. The second line is the hard version under the "impossible, not tedious" test.</p>
+ <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:20px">
+ <script>
+ const gl=[["G1","Enforce outside the agent","pe","No tool, path or credential reaches the enforcer"],
+ ["G2","Assign identity server-side, rooted in cryptography","pe","A signature the agent cannot forge"],
+ ["G3","Short-lived, per-agent credentials, out of reach","pe","Expiry the holder cannot extend"],
+ ["G4","Deny by default; narrow every tool","pe","The capability does not exist for that role"],
+ ["G5","Isolate execution and check the isolation","pe","A network path that does not exist"],
+ ["G6","Shared state is an audited, untrusted channel","pe","Peer text has no route to a capability"],
+ ["G7","Validate inputs, filter outputs at the gateway","e","None for natural language: rely on G4"],
+ ["G8","Record before dispatch; trace to the cause","pe","Signed records under a retention lock"],
+ ["G9","Monitor in layers, fail closed, publish recall","pe","Detection only: G4 must hold on a miss"],
+ ["G10","Contain in proportion; make the stop unbeatable","pe","Revocation and commit share one lock"],
+ ["G11","People decide; measure how fast they hear","pe","No approve or restart route to attack"],
+ ["G12","Sign what you load; verify before you run","e","A trust anchor outside the repository"]];
+ document.write(gl.map(([g,t,s,h])=>'<div class="box" style="height:176px;display:flex;flex-direction:column"><div style="display:flex;justify-content:space-between;align-items:center"><span class="mono" style="color:#8b9cff;font-weight:600;font-size:20px">'+g+'</span><span>'+(s.includes('p')?pill('Post','#8b9cff','font-size:12px;margin-right:6px'):'')+pill('eBook','#a7e05a','font-size:12px')+'</span></div><div style="font-weight:700;font-size:18.5px;line-height:1.25;margin-top:10px">'+t+'</div><div class="note" style="margin-top:auto;border-top:1px solid #283041;padding-top:8px">'+h+'</div></div>').join(''));
+ </script>
+ </div>
+ <div class="foot"><span>Figure 2 · section 4</span><span>Prefer a control that removes a capability over one that throttles it</span></div>
+</section>
+
+<!-- ================= Z3 post coverage ================= -->
+<section class="fig" id="z3" style="height:780px">
+ <p class="k">Figure 3 · Coverage of the Fable 5.2 post</p>
+ <h2>Both versions cover the post equally. The same three gaps remain.</h2>
+ <div style="display:grid;grid-template-columns:1fr 300px;gap:20px;margin-top:18px">
+ <div style="font-size:15px">
+ <script>
+ const pc=[["No network from the sandbox","met","met","OpenShell workflow"],["Gateway is the only way out","met","met",""],["No credentials in the sandbox","met","met",""],["Identity tagged outside the agent","met","met+","Ed25519 signatures added"],["No direct agent-to-agent channel","met","met",""],["Own branch, separate merge job","met","met",""],["Limits on the shared database","partial","partial","no true storage quota"],["One VM per agent","partial","partial","one microVM per execution"],["Hardened kernel, lockdown","no","no","kernel version checked only"],["Unprivileged; agent cannot touch its loop","met","met",""],["Real-time classifier on every tool call","met","met","fail-closed"],["Chain-of-thought and action-only monitors","partial","partial","no reasoning access"],["Block stops the team; a person reviews","met","met+","per-agent containment added"],["Offline monitoring, cross-agent lookup","partial","partial","measured recall 0.0"]];
+ const st=s=>s=="met"?pill("met",C.met):s=="met+"?pill("met, stronger",C.met):s=="partial"?pill("partial",C.partial):pill("not met",C.no);
+ document.write('<div class="tbl" style="grid-template-columns:44px 1fr 120px 160px 270px">'+head(["#","Post practice","v1.0","v2.0","Note"])+pc.map(([t,a,b,n],i)=>cell('<span class="mono" style="color:#8f98ad">'+(i+1)+'</span>',i)+cell('<span style="font-weight:600">'+t+'</span>',i)+cell(st(a),i)+cell(st(b),i)+cell('<span class="note">'+n+'</span>',i)).join('')+'</div>');
+ </script>
+ </div>
+ <div style="display:flex;flex-direction:column;gap:14px">
+ <script>document.write(tile("Met, both versions","9/14",C.met,"two strengthened in v2.0")+tile("Partial","4/14",C.partial,"database limits, per-agent VMs, monitor view, offline review")+tile("Not met","1/14",C.no,"kernel hardening; no Linux/KVM host qualified"));</script>
+  <div class="box" style="background:#170f13;border-color:#4a2530;color:#f1d3d8;font-size:14px">The Zero Trust work in v2.0 did not target the post-specific gaps: per-agent VMs, kernel hardening and monitors that work.</div>
+ </div>
+ </div>
+ <div class="foot"><span>Figure 3 · section 6 · scale excluded (1,000 agents against at most 10)</span><span>Self-assessment of local prototypes</span></div>
+</section>
+
+<!-- ================= Z4 tier ladder ================= -->
+<section class="fig" id="z4">
+ <p class="k">Figure 4 · Coverage of the eBook's fifteen controls</p>
+ <h2>v2.0 raises twelve of the fifteen controls. None reaches Advanced.</h2>
+ <p class="sub">Highest tier met as built. The v1.0 ratings were made for this paper from the code; the v2.0 ratings are the repository's scorecard.</p>
+ <div style="margin-top:10px">
+ <script>
+ // [control, v1 position, v2 position, note]; 0 below Foundation, 1 Foundation, 2 Enterprise, 3 Advanced; .5 = the tier below, partly the next
+ const tl=[["Agent identity verification",0,1,""],["Service authentication",0,2,""],["Permission models",1,2,""],["Privilege scoping",1,2,""],["Resource boundaries",2,2,"OpenShell workflow only; default mode is below Foundation"],["Action logging",1.5,2,"v1.0: hash-chained but unsigned"],["Traceability",0,1,""],["Baseline establishment",0,1,""],["Anomaly detection",0,1,""],["Automated response",0.5,2,"v1.0: team-wide stop, no triage"],["Input sanitization",1,1,"no change"],["Output filtering",0,1,""],["Configuration integrity",1,2,""],["Recovery",1.5,1.5,"Foundation, partly Enterprise; no change"],["Governance",0,1,""]];
+ const X0=330,XW=230,RH=40,Y0=64,x=p=>X0+p*XW;
+ let s='<svg width="1472" height="690" viewBox="0 0 1472 690">';
+ ["Below Foundation","Foundation","Enterprise","Advanced"].forEach((t,i)=>{s+='<text x="'+x(i)+'" y="26" text-anchor="middle" fill="#8b9cff" font-size="13" font-weight="700" letter-spacing="1.3">'+t.toUpperCase()+'</text><line x1="'+x(i)+'" y1="40" x2="'+x(i)+'" y2="'+(Y0+tl.length*RH-14)+'" stroke="#283041" stroke-width="1"/>';});
+ tl.forEach(([n,a,b,note],i)=>{const y=Y0+i*RH;
+  if(i%2)s+='<rect x="0" y="'+(y-20)+'" width="1472" height="'+RH+'" fill="#10141b" opacity=".7"/>';
+  s+='<text x="14" y="'+(y+5)+'" fill="#eef0f6" font-size="16" font-weight="600">'+n+'</text>';
+  if(a!=b)s+='<line x1="'+x(a)+'" y1="'+y+'" x2="'+(x(b)-13)+'" y2="'+y+'" stroke="#8b9cff" stroke-width="2" stroke-opacity=".55"/><path d="M'+(x(b)-13)+' '+y+' l-9 -5 v10 z" fill="#8b9cff" fill-opacity=".8"/>';
+  s+='<circle cx="'+x(a)+'" cy="'+y+'" r="8" fill="#0a0c11" stroke="#9aa3b8" stroke-width="2.5"/>';
+  s+='<circle cx="'+x(b)+'" cy="'+y+'" r="'+(a==b?4.5:9)+'" fill="#8b9cff" stroke="#0a0c11" stroke-width="2"/>';
+  if(note)s+='<text x="'+(x(3)+40)+'" y="'+(y+5)+'" fill="#a3abbe" font-size="13.5">'+note+'</text>';});
+ const ly=Y0+tl.length*RH+8;
+ s+='<circle cx="'+(X0-8)+'" cy="'+ly+'" r="8" fill="#0a0c11" stroke="#9aa3b8" stroke-width="2.5"/><text x="'+(X0+10)+'" y="'+(ly+5)+'" fill="#eef0f6" font-size="14.5">v1.0</text><circle cx="'+(X0+90)+'" cy="'+ly+'" r="9" fill="#8b9cff"/><text x="'+(X0+108)+'" y="'+(ly+5)+'" fill="#eef0f6" font-size="14.5">v2.0</text><text x="'+(X0+180)+'" y="'+(ly+5)+'" fill="#8f98ad" font-size="14.5">A marker between two tiers meets the lower tier and part of the next. A dot inside a ring means no change.</text>';
+ document.write(s+'</svg>');
+ </script>
+ </div>
+ <div class="foot"><span>Figure 4 · section 7 · architecture.md Zero Trust tier scorecard</span><span>Self-assessment, not an audit</span></div>
+</section>
+
+<!-- ================= Z5 workflow and operations ================= -->
+<section class="fig" id="z5" style="height:740px">
+ <p class="k">Figure 5 · Workflow and operations</p>
+ <h2>v2.0 adds measurement and operations; supply chain and memory lag</h2>
+ <div style="font-size:15px;margin-top:18px">
+ <script>
+ const wf=[["Phase 1","Identify requirements","partial","partial","no regulatory mapping; synthetic data"],["Phase 2","Manage supply chain","minimal","partial","no lockfile hashes or AI-BOM; ASI04 untested"],["Phase 3","Define agent boundaries","partial","met","escalation is stop-and-restart"],["Phase 4","Defend against prompt injection","partial","partial","structural only; no spotlighting or classifier"],["Phase 5","Secure tool access","partial","met","no human approval of single calls"],["Phase 6","Protect agent credentials","partial","mostly met","no just-in-time or hardware binding"],["Phase 7","Safeguard agent memory","partial","partial","no time-to-live or quarantine; ASI06 untested"],["Phase 8","Measure what matters","not met","met","dwell starts at detection"],["Part V","Model at the front of the alert queue","not met","met","agreement with a reviewer unmeasured"],["Part V","Detection coverage mapped to ATT&amp;CK","not met","met","13 mapped scenarios"],["Part V","Tabletop for five incidents","not met","met","acknowledgements were scripted"],["Part V","Emergency change procedures","not met","met","runbook commands tested"],["Part V","Zero Trust for defensive agents","partial","met","triage and monitors have no tools"]];
+ const ws=s=>pill(s,s=="met"?C.met:s=="not met"?C.no:C.partial);
+ document.write('<div class="tbl" style="grid-template-columns:110px 1fr 150px 150px 470px">'+head(["eBook","Practice","v1.0","v2.0","Remaining gap or evidence"])+wf.map(([p,t,a,b,n],i)=>cell('<span class="mono" style="color:#8f98ad;font-size:13.5px">'+p+'</span>',i,'padding-top:7px;padding-bottom:7px')+cell('<span style="font-weight:600">'+t+'</span>',i)+cell(ws(a),i)+cell(ws(b),i)+cell('<span class="note">'+n+'</span>',i)).join('')+'</div>');
+ </script>
+ </div>
+ <div class="foot"><span>Figure 5 · sections 8.1 and 8.2</span><span>v2.0: 9 of 13 met or mostly met · v1.0: 0 of 13</span></div>
+</section>
+
+<!-- ================= Z6 threat classes ================= -->
+<section class="fig" id="z6" style="height:720px">
+ <p class="k">Figure 6 · Threat classes</p>
+ <h2>Three of the eBook's five threat classes are tested. Two have no scenario.</h2>
+ <p class="sub">v2.0 attack suite, 13 offline scenarios on synthetic data. Each square is one scenario.</p>
+ <div style="display:grid;grid-template-columns:1fr 300px;gap:20px;margin-top:22px">
+ <div style="font-size:16px">
+ <script>
+ // [class, scenarios, detected, note]; all run scenarios were prevented
+ const th=[["Prompt injection",1,0,"prevented, not detected; replay model double ignores injected text"],["Tool and resource misuse",4,4,"out-of-role tool, credential in a note, flooding, monitor-evasion goal"],["Identity and privilege abuse",4,4,"identity field, forged signature, stolen token, restricted-agent write"],["Supply chain (ASI04)",0,0,"no scenario"],["Memory and context poisoning (ASI06)",0,0,"no scenario"],["Integrity and control plane",4,3,"outside the eBook's five; stale submit after stop not detected"]];
+ const sq=(c,fill)=>'<span style="display:inline-block;width:26px;height:26px;border-radius:5px;margin-right:6px;border:2px solid '+c+';background:'+(fill?c:'transparent')+'"></span>';
+ document.write('<div class="tbl" style="grid-template-columns:330px 190px 1fr">'+head(["Threat class","Scenarios","Result"])+th.map(([t,n,d,note],i)=>cell('<span style="font-weight:600">'+t+'</span>',i,'padding-top:17px;padding-bottom:17px')+cell(n?Array.from({length:n},(_,k)=>sq(k<d?C.met:C.partial,k<d)).join(''):pill('not covered',C.no),i)+cell('<span class="note" style="font-size:15px">'+note+'</span>',i)).join('')+'</div>'+
+ '<div style="margin-top:16px;display:flex;gap:26px;align-items:center;color:#a3abbe;font-size:14.5px"><span style="display:flex;align-items:center">'+sq(C.met,true)+'prevented and detected</span><span style="display:flex;align-items:center">'+sq(C.partial,false)+'prevented, no alert raised</span></div>');
+ </script>
+ </div>
+ <div style="display:flex;flex-direction:column;gap:14px">
+ <script>document.write(tile("Prevented","13/13",C.met,"12 blocked; the audit rewrite is tamper-evident")+tile("Detected","11/13",C.partial,"no alert for indirect injection or the stale submit")+tile("Classes with no scenario","2/5",C.no,"supply chain; memory and context poisoning"));</script>
+ </div>
+ </div>
+ <div class="foot"><span>Figure 6 · section 8.3 · reports/threat-coverage.json, threats-v1</span><span>v1.0 has one demonstration: the out-of-role tool call</span></div>
+</section>
+
+<!-- ================= Z7 barrier vs friction ================= -->
+<section class="fig" id="z7" style="height:750px">
+ <p class="k">Figure 7 · Impossible, not tedious</p>
+ <h2>No prevented attack depended on an LLM monitor</h2>
+ <p class="sub">v2.0 controls sorted by the eBook's design test. Ten of 13 scenarios were stopped by a barrier, three by a deterministic rule on the right.</p>
+ <div style="display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-top:22px;font-size:16.5px">
+ <script>
+ const bf=(t,c,sub,items)=>'<div class="box" style="border-color:'+c+'66;padding:18px 22px"><div style="color:'+c+';font-weight:700;font-size:14px;letter-spacing:.12em;text-transform:uppercase">'+t+'</div><div class="note" style="margin:4px 0 10px">'+sub+'</div>'+items.map(x=>'<div style="padding:9px 0;border-top:1px solid #283041">'+x+'</div>').join('')+'</div>';
+ document.write(bf("Barrier","#4ade80","The path does not exist",["No guest network interface in the microVM","No shell, HTTP, SQL or Git tool in any role","Identity resolved from a server-held token, never from arguments","Run epoch re-checked in the commit transaction","Ed25519 signature on requests, records and policy files","Fencing tokens on task leases","No approve, restart or policy route on the monitoring API","No cross-run board access"])+
+ bf("Friction or detection","#fbbf24","It slows or reports",["Behaviour-profile rate and count limits","Spend, model-call and tool-call budgets","Regex rule monitor on plan and note text","LLM action and context monitors","Pattern-based output filter","Offline behavioural reviewer (measured recall 0.0)","Note and board size caps","Untrusted-data framing in prompts"]));
+ </script>
+ </div>
+ <div class="box" style="margin-top:18px;background:#170f13;border-color:#4a2530;color:#f1d3d8;font-size:15px">Three barriers are weaker than they look: in the default mode the signing keys and gateway share a process with the agents; the configuration trust anchor is in the repository; the microVM boundary is qualified on one development host.</div>
+ <div class="foot"><span>Figure 7 · section 9</span><span>The suite has no attack that only a monitor could stop</span></div>
+</section>
+
+<script>
+const id=new URLSearchParams(location.search).get('f')||'zcover';
+document.getElementById(id).classList.add('on');
+</script>
+</body></html>
