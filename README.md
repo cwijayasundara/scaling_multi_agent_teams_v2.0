@@ -8,8 +8,10 @@ Needs macOS (Apple Silicon) or Linux, Python 3.12, `uv`, Node.js and Homebrew.
 
 ```bash
 make setup                                # Python, UI, OpenShell microVM gateway, sandbox check
-test -f .env || cp .env.example .env      # then set OPENAI_API_KEY=your-key in .env
+security add-generic-password -s teamlab-openai -a teamlab -w   # macOS Keychain; prompts for the key (Linux: secret-tool store --label teamlab service teamlab-openai)
 ```
+
+The Keychain is the recommended home for the provider key. A key in `.env` (copy `.env.example`) still works as a fallback but prints a warning, because a static key on disk is a known gap. The run records where the key came from in `run.started`.
 
 `make setup` must end with `qualified`. Check the gateway at any time with `openshell status`.
 

@@ -1,4 +1,5 @@
 import json
+import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -442,8 +443,99 @@ def test_local_secret_loading_is_scoped_and_does_not_override_environment(tmp_pa
     monkeypatch.delenv("TEAMLAB_UNSUPPORTED_TEST", raising=False)
     path = tmp_path / ".env"
     path.write_text('OPENAI_API_KEY="different-test-secret"\nexport TEAMLAB_MONITOR_TOKEN=\'local-test-token\' # comment\nTEAMLAB_UNSUPPORTED_TEST=no\n')
-    load_local_secrets(path)
+    loaded = load_local_secrets(path)
     import os
+    assert loaded == frozenset({"TEAMLAB_MONITOR_TOKEN"})
     assert os.environ["OPENAI_API_KEY"] == "existing-test-secret"
     assert os.environ["TEAMLAB_MONITOR_TOKEN"] == "local-test-token"
     assert "TEAMLAB_UNSUPPORTED_TEST" not in os.environ
+
+
+class FakeRunner:
+    def __init__(self, stdout="", returncode=0, raises=None):
+        self.calls = []
+        self.result = subprocess.CompletedProcess([], returncode, stdout=stdout, stderr="")
+        self.raises = raises
+
+    def __call__(self, argv, **kwargs):
+        self.calls.append((argv, kwargs))
+        if self.raises:
+            raise self.raises
+        return self.result
+
+
+def test_provider_key_prefers_environment(monkeypatch):
+    from teamlab.config import load_provider_key
+    monkeypatch.setenv("OPENAI_API_KEY", "env-test-secret")
+    runner = FakeRunner("keychain-test-secret\n")
+    assert load_provider_key(frozenset(), runner=runner, platform="darwin") == "environment"
+    assert runner.calls == []
+
+
+def test_provider_key_reads_keychain_without_shell(monkeypatch):
+    from teamlab.config import load_provider_key
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("TEAMLAB_KEYCHAIN_SERVICE", raising=False)
+    runner = FakeRunner("keychain-test-secret\n")
+    assert load_provider_key(frozenset(), runner=runner, platform="darwin") == "keychain"
+    argv, kwargs = runner.calls[0]
+    assert argv == ["/usr/bin/security", "find-generic-password", "-s", "teamlab-openai", "-w"]
+    assert not kwargs.get("shell")
+    assert kwargs["timeout"] == 5
+    import os
+    assert os.environ["OPENAI_API_KEY"] == "keychain-test-secret"
+
+
+def test_provider_key_reads_secret_tool_on_linux(monkeypatch):
+    from teamlab.config import load_provider_key
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("TEAMLAB_KEYCHAIN_SERVICE", "custom.svc")
+    runner = FakeRunner("linux-test-secret")
+    assert load_provider_key(frozenset(), runner=runner, platform="linux") == "keychain"
+    assert runner.calls[0][0] == ["secret-tool", "lookup", "service", "custom.svc"]
+
+
+def test_provider_key_from_dotenv_is_flagged(monkeypatch, capsys):
+    from teamlab.config import load_provider_key
+    monkeypatch.setenv("OPENAI_API_KEY", "dotenv-test-secret")
+    runner = FakeRunner("", returncode=44)
+    assert load_provider_key(frozenset({"OPENAI_API_KEY"}), runner=runner, platform="darwin") == "dotenv"
+    err = capsys.readouterr().err
+    assert "read from .env" in err and "security add-generic-password -s teamlab-openai" in err
+    assert "dotenv-test-secret" not in err
+
+
+@pytest.mark.parametrize("failure", [FakeRunner(returncode=1), FakeRunner(raises=FileNotFoundError()),
+                                     FakeRunner(raises=subprocess.TimeoutExpired("x", 5)), FakeRunner("a\nb\n"), FakeRunner("  \n")])
+def test_provider_key_lookup_failure_is_a_miss(monkeypatch, failure):
+    from teamlab.config import load_provider_key
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert load_provider_key(frozenset(), runner=failure, platform="darwin") == "none"
+    assert "OPENAI_API_KEY" not in __import__("os").environ
+
+
+def test_provider_key_unsupported_platform_skips_lookup(monkeypatch):
+    from teamlab.config import load_provider_key
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    runner = FakeRunner("x")
+    assert load_provider_key(frozenset(), runner=runner, platform="win32") == "none"
+    assert runner.calls == []
+
+
+def test_invalid_keychain_service_name_is_rejected(monkeypatch):
+    from teamlab.config import load_provider_key
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("TEAMLAB_KEYCHAIN_SERVICE", "x; rm -rf")
+    runner = FakeRunner("secret")
+    with pytest.raises(ValueError):
+        load_provider_key(frozenset(), runner=runner, platform="darwin")
+    assert runner.calls == []
+
+
+def test_run_started_records_key_source(tmp_path):
+    source = tmp_path / "source.csv"
+    generate(source, rows=20, seed=3)
+    c = Controller(tmp_path / "run", source, provider_key_source="keychain")
+    with c.store.connect() as db:
+        row = db.execute("SELECT detail FROM events WHERE run_id=? AND kind='run.started'", (c.run_id,)).fetchone()
+    assert json.loads(row[0])["provider_key_source"] == "keychain"
