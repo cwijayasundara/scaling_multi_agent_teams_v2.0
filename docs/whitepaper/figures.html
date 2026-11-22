@@ -329,12 +329,12 @@ svg text{font-family:Inter,system-ui,sans-serif}
 <!-- ================= FIG 10 evidence ================= -->
 <section class="fig" id="f10">
  <p class="k">Figure 10 · What the evidence says</p>
- <h2>The deterministic layers held. The model monitor did not.</h2>
+ <h2>The deterministic layers held. The model monitor was weak.</h2>
  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:28px">
   <div class="box"><div style="color:#8f98ad;font-size:15px">Backend tests</div><div style="font-size:52px;font-weight:800;color:#4ade80">83</div><div style="color:#a3abbe;font-size:14.5px">passed · races, leases, spoofing, audit outage, recovery</div></div>
   <div class="box"><div style="color:#8f98ad;font-size:15px">Replay runs matching grader</div><div style="font-size:52px;font-weight:800;color:#4ade80">20/20</div><div style="color:#a3abbe;font-size:14.5px">1, 2, 4, 8 workers × 5 seeds</div></div>
   <div class="box"><div style="color:#8f98ad;font-size:15px">Live 1-worker run</div><div style="font-size:52px;font-weight:800;color:#fbbf24">Paused</div><div style="color:#a3abbe;font-size:14.5px">call ceiling · then context monitor false positive (failed closed)</div></div>
-  <div class="box"><div style="color:#8f98ad;font-size:15px">Behavioural reviewer recall</div><div style="font-size:52px;font-weight:800;color:#f87171">0.0</div><div style="color:#a3abbe;font-size:14.5px">dev 0/4 · holdout 0/2 · 0 false positives</div></div>
+  <div class="box"><div style="color:#8f98ad;font-size:15px">Behavioural reviewer · strict recall</div><div style="font-size:52px;font-weight:800;color:#f87171">0.0</div><div style="color:#a3abbe;font-size:14.5px">text-only cases · 3/6 partly or mislabelled · 3/6 missed · 0 false positives</div></div>
  </div>
  <div class="box" style="margin-top:18px;padding:22px 26px">
   <div style="display:flex;justify-content:space-between;align-items:baseline"><div style="font-size:20px;font-weight:700">Median elapsed seconds · 1,000-row collaborative replay · 5 seeds each</div><div style="color:#8f98ad;font-size:14px">orchestration overhead, not intelligence</div></div>
@@ -347,7 +347,7 @@ svg text{font-family:Inter,system-ui,sans-serif}
  </div>
  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px;font-size:16px">
   <div class="box" style="background:#0e1712;border-color:#1f4030;color:#cfe9d8"><b>Held:</b> forbidden tool → whole team stopped, teammate's next claim rejected · guest had no network · spoofed identity impossible · stale epoch could not commit</div>
-  <div class="box" style="background:#170f13;border-color:#4a2530;color:#f1d3d8"><b>Missed:</b> same-family, no-reasoning monitor caught 0 of 6 planted scenarios. Capability removal stayed in force anyway.</div>
+  <div class="box" style="background:#170f13;border-color:#4a2530;color:#f1d3d8"><b>Weak:</b> on text-only cases the reviewer partly flagged or mislabelled 3 of 6 harmful cases and missed 3 outright (grader, monitor, sandbox escape). Capability removal stayed in force anyway.</div>
  </div>
  <div class="foot"><span>Figure 10 · reports/IMPLEMENTATION_STATUS.md · collaboration-benchmark.json · security-*.json · live-one-worker.json</span><span>Finite suites, one dev host</span></div>
 </section>
@@ -365,7 +365,7 @@ svg text{font-family:Inter,system-ui,sans-serif}
  ["Gateway / identity","External, tags identity","Closure tokens + epochs; split plane","Close","#4ade80"],
  ["Real-time monitor","Fail-closed action classifier","Rules + action + context, no CoT","Weaker signal","#fbbf24"],
  ["Block consequence","Helper removed (during run)","Any block stops the whole team","Stricter","#4ade80"],
- ["Offline monitor","Cross-agent run-record review","Windowed, evidence-cited reviewer","0.0 recall","#f87171"],
+ ["Offline monitor","Cross-agent run-record review","Windowed, evidence-cited reviewer","0.0 strict recall","#f87171"],
  ["Correctness","Lean kernel","Independent SQL reference grader","Equivalent role","#4ade80"]];
  document.write(`<div style="display:grid;grid-template-columns:220px 1fr 1fr 210px;gap:0;border:1px solid #283041;border-radius:14px;overflow:hidden">`+
  ["Dimension","Fable 5.2 post","TeamLab","Fidelity"].map(h=>`<div style="padding:14px 18px;background:#171c26;color:#8b9cff;font-weight:700;font-size:14px;letter-spacing:.1em;text-transform:uppercase">${h}</div>`).join('')+
