@@ -100,19 +100,20 @@ def execute(args):
                     from .recovery import Checkpoints
                     Checkpoints(team.board).restore(args.run, args.checkpoint, broker=broker)
                 out = team.run()
+        # Every alert gets a disposition, including on a completed run (a
+        # rejected credential does not stop the team). No alerts: a no-op.
+        triage_alerts(c, client)
         state = c.store.run(c.run_id)["state"]
         print(json.dumps({"run_id": c.run_id, "state": state, "artifacts": str(out)}), flush=True)
-        if state != "COMPLETED":
-            triage_after_stop(c, client)
         return 0
     except BaseException:
         c.store.stop(c.run_id, "operator interruption or execution failure", "PAUSED")
         c.export()
-        triage_after_stop(c, client)
+        triage_alerts(c, client)
         raise
 
 
-def triage_after_stop(c, client):
+def triage_alerts(c, client):
     """Record first-pass dispositions; a triage failure never masks the run's outcome."""
     from . import triage
     try:
@@ -259,7 +260,16 @@ def parser():
     return p
 
 
-MODEL_COMMANDS = frozenset({"run", "restart", "review-behavior", "evaluate-security", "benchmark", "collaboration-benchmark"})
+def uses_provider_key(args) -> bool:
+    """True only when this process itself will call the model provider with the key."""
+    if getattr(args, "control_plane", None):
+        return False  # the separated supervisor holds the key, never the runtime
+    if args.command in ("run", "restart", "collaboration-benchmark"):
+        return args.mode == "live"
+    if args.command == "triage":
+        return args.model
+    # plane: the supervisor starts the model proxy, which needs the key.
+    return args.command in ("review-behavior", "evaluate-security", "plane")
 
 
 def main(argv=None):
@@ -267,9 +277,8 @@ def main(argv=None):
     try:
         from .config import load_local_secrets, load_provider_key
         dotenv_loaded = load_local_secrets()
-        # Only commands that can make model calls consult the OS credential store.
-        model_command = args.command in MODEL_COMMANDS or (args.command == "triage" and args.model)
-        args.provider_key_source = load_provider_key(dotenv_loaded) if model_command else "none"
+        # Only a process that will call the model consults the OS credential store.
+        args.provider_key_source = load_provider_key(dotenv_loaded) if uses_provider_key(args) else "none"
         if args.command == 'qualify-host':
             from .qualify import write_host_report
             from .execution import OpenShellBroker
@@ -328,6 +337,8 @@ def main(argv=None):
             return 0 if result.get('passed', True) else 1
         if args.command == 'triage':
             from .triage import ModelTriage, RuleTriage, triage_run
+            if not Path(args.root).is_dir():
+                raise ValueError(f"run root not found: {args.root}")
             store = Store(Path(args.root), database_url=os.environ.get('TEAMLAB_DATABASE_URL'))
             store.run(args.run_id)
             if args.model:
@@ -373,6 +384,10 @@ def main(argv=None):
         elif args.command == "verify-audit":
             from .identity import verify_journal_signatures
             journal_path = Path(args.root) / "audit.jsonl"
+            if not Path(args.root).is_dir():
+                raise ValueError(f"audit root not found: {args.root}")
+            if not journal_path.is_file():
+                raise ValueError(f"audit journal not found: {journal_path}")
             store = Store(Path(args.root), database_url=os.environ.get("TEAMLAB_DATABASE_URL"))
             print(json.dumps({"verified_records": Journal(journal_path).verify(),
                 "verified_signatures": verify_journal_signatures(journal_path, store)}))

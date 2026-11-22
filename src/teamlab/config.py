@@ -48,8 +48,15 @@ def load_local_secrets(path: Path = Path(".env")) -> frozenset[str]:
 
 
 _SERVICE_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
-_DOTENV_WARNING = ("warning: OPENAI_API_KEY was read from .env; a static key on disk is a known gap. "
-                   "Store it with: security add-generic-password -s teamlab-openai -a teamlab -w")
+
+
+def _dotenv_warning(service: str, platform: str) -> str:
+    text = "warning: OPENAI_API_KEY was read from .env; a static key on disk is a known gap. "
+    if platform == "darwin":
+        return text + f"Store it with: security add-generic-password -s {service} -a teamlab -w"
+    if platform.startswith("linux"):
+        return text + f"Store it with: secret-tool store --label teamlab service {service}"
+    return text + "Store it in the OS credential store or the process environment."
 
 
 def _keychain_command(service: str, platform: str) -> list[str] | None:
@@ -60,7 +67,11 @@ def _keychain_command(service: str, platform: str) -> list[str] | None:
     return None
 
 
-def load_provider_key(dotenv_loaded: frozenset[str], runner=subprocess.run, platform: str | None = None) -> str:
+# The credential-store runner; tests replace it so the suite never reads a real key.
+_credential_store_runner = subprocess.run
+
+
+def load_provider_key(dotenv_loaded: frozenset[str], runner=None, platform: str | None = None) -> str:
     """Resolve OPENAI_API_KEY and report its source without ever printing it.
 
     Returns "environment", "keychain", "dotenv" or "none". The credential store
@@ -71,7 +82,10 @@ def load_provider_key(dotenv_loaded: frozenset[str], runner=subprocess.run, plat
     service = os.environ.get("TEAMLAB_KEYCHAIN_SERVICE", "teamlab-openai")
     if not _SERVICE_PATTERN.fullmatch(service):
         raise ValueError("TEAMLAB_KEYCHAIN_SERVICE must match ^[A-Za-z0-9._-]{1,64}$")
-    command = _keychain_command(service, platform or sys.platform)
+    if runner is None:
+        runner = _credential_store_runner
+    platform = platform or sys.platform
+    command = _keychain_command(service, platform)
     if command is not None:
         try:
             result = runner(command, capture_output=True, text=True, timeout=5, check=False)
@@ -82,6 +96,6 @@ def load_provider_key(dotenv_loaded: frozenset[str], runner=subprocess.run, plat
             os.environ["OPENAI_API_KEY"] = value
             return "keychain"
     if "OPENAI_API_KEY" in dotenv_loaded:
-        print(_DOTENV_WARNING, file=sys.stderr)
+        print(_dotenv_warning(service, platform), file=sys.stderr)
         return "dotenv"
     return "none"

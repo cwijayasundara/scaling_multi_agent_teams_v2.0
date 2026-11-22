@@ -41,7 +41,7 @@ else
   echo "npm not found; install Node.js, then rerun (the dashboard is optional)" >&2
 fi
 
-[ -f .env ] || echo "note: no .env yet. Live runs need OPENAI_API_KEY: cp .env.example .env && chmod 600 .env"
+[ -f .env ] || echo "note: live runs need OPENAI_API_KEY. Store it in the Keychain: security add-generic-password -s teamlab-openai -a teamlab -w (Linux: secret-tool store --label teamlab service teamlab-openai). Fallback: cp .env.example .env && chmod 600 .env"
 
 if [ "$WITH_OPENSHELL" = 0 ]; then
   step "Skipping OpenShell (--no-openshell)"; exit 0

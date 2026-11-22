@@ -17,7 +17,6 @@ if [ "${MISSING:-0}" = 1 ]; then
   exit 2
 fi
 
-[ -f .env ] || [ -n "${OPENAI_API_KEY:-}" ] || { echo "error: OPENAI_API_KEY not set (.env or environment)" >&2; exit 2; }
 openshell status 2>/dev/null | grep -q Connected || { echo "error: OpenShell gateway not connected; run scripts/setup.sh" >&2; exit 2; }
 if ! .venv/bin/python -c 'import json,sys; sys.exit(0 if json.load(open("reports/host-qualification.json")).get("qualified") else 1)' 2>/dev/null; then
   echo "error: no passing qualification; run: PYTHONPATH=src .venv/bin/python -m teamlab qualify-host" >&2

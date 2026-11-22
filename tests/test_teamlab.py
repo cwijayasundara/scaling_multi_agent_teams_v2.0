@@ -551,3 +551,95 @@ def test_non_model_command_never_consults_the_credential_store(tmp_path, monkeyp
     monkeypatch.setattr(teamlab.config, "load_provider_key", forbidden)
     monkeypatch.chdir(tmp_path)
     assert main(["fixture", "--output", str(tmp_path / "f.csv"), "--rows", "20"]) == 0
+
+
+def test_keychain_key_overrides_dotenv_key(monkeypatch, capsys):
+    from teamlab.config import load_provider_key
+    import os
+    monkeypatch.setenv("OPENAI_API_KEY", "dotenv-test-secret")
+    runner = FakeRunner("keychain-test-secret\n")
+    assert load_provider_key(frozenset({"OPENAI_API_KEY"}), runner=runner, platform="darwin") == "keychain"
+    assert os.environ["OPENAI_API_KEY"] == "keychain-test-secret"
+    assert "read from .env" not in capsys.readouterr().err
+
+
+def test_dotenv_warning_names_the_linux_credential_store(monkeypatch, capsys):
+    from teamlab.config import load_provider_key
+    monkeypatch.setenv("OPENAI_API_KEY", "dotenv-test-secret")
+    monkeypatch.delenv("TEAMLAB_KEYCHAIN_SERVICE", raising=False)
+    assert load_provider_key(frozenset({"OPENAI_API_KEY"}), runner=FakeRunner(returncode=1), platform="linux") == "dotenv"
+    err = capsys.readouterr().err
+    assert "secret-tool store --label teamlab service teamlab-openai" in err
+    assert "security add-generic-password" not in err
+
+
+@pytest.mark.parametrize("argv,expected", [
+    (["run"], False),
+    (["run", "--mode", "sdk-replay"], False),
+    (["restart", "--run", "r", "--reason", "x"], False),
+    (["benchmark", "--mode", "sdk-replay"], False),
+    (["collaboration-benchmark"], False),
+    (["triage", "--root", "r", "--run-id", "x"], False),
+    (["fixture", "--output", "f.csv"], False),
+    (["run", "--mode", "live", "--control-plane", "p"], False),
+    (["run", "--mode", "live"], True),
+    (["restart", "--mode", "live", "--run", "r", "--reason", "x"], True),
+    (["collaboration-benchmark", "--mode", "live"], True),
+    (["review-behavior", "--root", "r", "--run", "x", "--output", "o"], True),
+    (["evaluate-security", "--output", "o"], True),
+    (["triage", "--root", "r", "--run-id", "x", "--model"], True),
+    (["plane", "--root", "r"], True),
+])
+def test_only_model_calls_resolve_the_provider_key(argv, expected):
+    from teamlab.cli import parser, uses_provider_key
+    assert uses_provider_key(parser().parse_args(argv)) is expected
+
+
+def test_scripted_run_never_consults_the_credential_store(tmp_path, monkeypatch, credential_store):
+    import teamlab.config
+    def forbidden(*args, **kwargs):
+        raise AssertionError("credential store consulted")
+    monkeypatch.setattr(teamlab.config, "load_provider_key", forbidden)
+    monkeypatch.chdir(tmp_path)
+    assert main(["run", "--root", str(tmp_path / "r"), "--rows", "100"]) == 0
+    store = Store(tmp_path / "r")
+    with store.connect() as db:
+        row = db.execute("SELECT detail FROM events WHERE kind='run.started'").fetchone()
+    assert json.loads(row[0])["provider_key_source"] == "none"
+    assert credential_store.calls == []
+
+
+def test_plane_supervisor_resolves_key_from_credential_store(tmp_path, monkeypatch, credential_store):
+    import os
+    import teamlab.plane
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "placeholder")
+    monkeypatch.delenv("OPENAI_API_KEY")
+    credential_store.value = "keychain-test-secret"
+    seen = []
+
+    class FakePlane:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            seen.append(os.environ.get("OPENAI_API_KEY"))
+            raise SecurityError("stop after start")
+    monkeypatch.setattr(teamlab.plane, "Plane", FakePlane)
+    assert main(["plane", "--root", str(tmp_path / "p")]) == 1
+    assert seen == ["keychain-test-secret"]
+    assert len(credential_store.calls) == 1
+
+
+def test_verify_audit_and_triage_refuse_a_missing_root(tmp_path, capsys):
+    missing = tmp_path / "typo"
+    assert main(["verify-audit", "--root", str(missing)]) == 1
+    assert "not found" in capsys.readouterr().err
+    assert main(["triage", "--root", str(missing), "--run-id", "x"]) == 1
+    assert "not found" in capsys.readouterr().err
+    assert not missing.exists()
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert main(["verify-audit", "--root", str(empty)]) == 1
+    assert "audit.jsonl" in capsys.readouterr().err
+    assert list(empty.iterdir()) == []

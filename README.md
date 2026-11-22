@@ -11,7 +11,13 @@ make setup                                # Python, UI, OpenShell microVM gatewa
 security add-generic-password -s teamlab-openai -a teamlab -w   # macOS Keychain; prompts for the key (Linux: secret-tool store --label teamlab service teamlab-openai)
 ```
 
-The Keychain is the recommended home for the provider key. A key in `.env` (copy `.env.example`) still works as a fallback but prints a warning, because a static key on disk is a known gap. The run records where the key came from in `run.started`.
+The Keychain is the recommended home for the provider key. A key in `.env` still works as a fallback but prints a warning, because a static key on disk is a known gap:
+
+```bash
+cp .env.example .env && chmod 600 .env    # fallback only: then set OPENAI_API_KEY in .env
+```
+
+The run records where the key came from in `run.started`. Only commands that call the model look the key up; offline runs record `none`.
 
 `make setup` must end with `qualified`. Check the gateway at any time with `openshell status`.
 
@@ -50,7 +56,7 @@ The run prints its `run_id` first and its `artifacts` folder last. Results are i
 | `issues.jsonl` | Every excluded row and why |
 | `sources.json` | The Python each agent wrote and ran in OpenShell |
 | `events.jsonl` | Full audit trail of every agent action |
-| `agents.json` | Each agent's role and registered Ed25519 public key, for checking signed audit records |
+| `agents.json` | Each agent's role and registered Ed25519 public key, for checking signed audit records (`teamlab verify-audit --root ROOT`; a root created before signed records fails with `unsigned audit record`, so start a new root) |
 | `dlp.json` | What the output filter found and which exported files it redacted |
 
 In the UI, open the run to replay the timeline, inspect each agent and see the evidence checks.
