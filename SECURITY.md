@@ -35,6 +35,8 @@ An operator/root compromise, malicious installed dependency, or compromise of th
 
 ## Stop and restart
 
+Runbooks: [incident response](docs/runbooks/incident-response.md), [emergency change](docs/runbooks/emergency-change.md), [tabletop](docs/runbooks/tabletop.md) and [acceptable use](docs/runbooks/acceptable-use.md).
+
 Use the `stop` CLI to revoke the entire run. A provider request already in flight may still finish and be billed. Late model responses and stale result submissions cannot authorize tool effects. There are no untrusted background programs to terminate in this profile.
 
 After review, `restart` creates a clean new run from the captured input rather than continuing old contexts or credentials. It does not automatically repair a broken task or carry forward suspicious artifacts. A new run using the same malicious input may stop again; investigate and correct the cause first.

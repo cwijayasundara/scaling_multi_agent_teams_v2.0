@@ -70,3 +70,12 @@ Shipped policy files (`behavior_profiles.json`, `access_policy.json`, `sandbox_p
 A policy breach no longer stops the whole team by default: the offending agent is restricted (read-only), then quarantined with its sessions revoked and its leased work returned to the board, while the others continue. Deterministic violations (forbidden capabilities, identity fields in arguments, bad signatures, credentials in notes) still stop the team, and containing a fixed-workflow worker, the coordinator or the verifier pauses the run. There is no un-quarantine; `restart` starts fresh agents. `GET /runs/RUN_ID/snapshot` shows agent states read-only.
 
 To measure how alerts are handled, `teamlab trace --root ROOT --run-id RUN_ID` prints the request trace, `teamlab ack --root ROOT --run-id RUN_ID --all-open` (or `--alert-seq N`) records that a human has seen open alerts, and `teamlab metrics --root ROOT [--run-id RUN_ID]` prints triage and human coverage and dwell time (measured from alert detection). The monitoring API serves the same data read-only at `GET /runs/RUN_ID/trace`, `GET /runs/RUN_ID/metrics` and `GET /metrics`; acknowledgement is CLI-only.
+
+## Operations
+
+Runbooks for operators, with commands checked by `tests/test_runbooks.py`:
+
+- [Incident response](docs/runbooks/incident-response.md): alert, triage, acknowledge, decide.
+- [Emergency change](docs/runbooks/emergency-change.md): stop, restart, rotate keys, revoke the provider key.
+- [Tabletop exercise](docs/runbooks/tabletop.md): `teamlab tabletop`, last measured results, debrief.
+- [Acceptable use](docs/runbooks/acceptable-use.md): approved data, prohibited activity, deployment approval.
