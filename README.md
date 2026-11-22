@@ -58,7 +58,7 @@ The run prints its `run_id` first and its `artifacts` folder last. Results are i
 | `events.jsonl` | Full audit trail of every agent action |
 | `agents.json` | Each agent's role and registered Ed25519 public key, for checking signed audit records (`teamlab verify-audit --root ROOT`; a root created before signed records fails with `unsigned audit record`, so start a new root) |
 | `dlp.json` | What the output filter found and which exported files it redacted |
-| `trace.json` | The request trace: one root run span, worker-turn spans and every operation parented to its cause (`teamlab trace --root ROOT --run-id RUN_ID`) |
+| `trace.json` | The request trace: one root run span, the agent-turn spans under it (`worker-turn` in scripted runs, `delegated-turn` and `verifier-turn` in the fixed SDK team, `round-N` and `turn` in collaborative runs) and every committed, denied or failed operation parented to its cause, each with its `status` (`teamlab trace --root ROOT --run-id RUN_ID`) |
 | `alert_metrics.json` | Alert triage and acknowledgement coverage, dwell time and SLO breaches at export time |
 
 In the UI, open the run to replay the timeline, inspect each agent and see the evidence checks.

@@ -158,3 +158,14 @@ def test_bundle_has_alert_metrics(controller):
     assert 'alert_metrics.json' in manifest and 'metrics.json' in manifest
     assert json.loads((out / 'alert_metrics.json').read_text())['run_id'] == controller.run_id
     assert validate_bundle(out)['passed']
+
+
+def test_ack_falls_back_when_os_user_is_unknown(controller, capsys, monkeypatch):
+    import getpass
+
+    def boom():
+        raise OSError('no user')
+    monkeypatch.setattr(getpass, 'getuser', boom)
+    violate(controller)
+    assert main(['ack', '--root', str(controller.store.root), '--run-id', controller.run_id, '--all-open']) == 0
+    assert json.loads(capsys.readouterr().out)['acknowledged_by'] == 'unknown'

@@ -382,7 +382,10 @@ def main(argv=None):
                 seqs = [a['seq'] for a in store.events_of_kinds(args.run_id, ALERT_KINDS) if a['seq'] not in done]
             else:
                 seqs = [args.alert_seq]
-            by = getpass.getuser()
+            try:
+                by = getpass.getuser()  # advisory attribution, not authentication
+            except Exception:
+                by = 'unknown'
             for seq in seqs:
                 metrics.acknowledge(store, args.run_id, seq, by=by, note=args.note)
             print(json.dumps({'acknowledged': seqs, 'acknowledged_by': by}))
