@@ -27,8 +27,10 @@ def snapshot(store, run_id):
             work = [{k: v for k, v in decoded(r).items() if k != 'result'} for r in db.execute('SELECT * FROM work WHERE run_id=?', (run_id,))]
     config = next((e['detail'] for e in reversed(events) if e['kind']=='execution.configured'), {})
     authored = config.get('workflow') == 'authored'
+    from .containment import agent_states
     return {
         'work': work,
+        'agents': agent_states(store, run_id),
         'run': run,
         'tasks': [{k: t[k] for k in ('shard', 'state', 'owner', 'fence')} for t in store.tasks(run_id)],
         'events': events, 'summaries': summaries,

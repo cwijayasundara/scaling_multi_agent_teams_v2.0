@@ -125,7 +125,8 @@ def test_copied_bearer_token_without_key_expires(controller, clock):
     clock.advance(301)
     with pytest.raises(SecurityError):
         controller.claim(thief)
-    assert controller.store.run(controller.run_id)['state'] in ('RUNNING', 'STOPPED')
+    # The rejection quarantines worker-0; a fixed-workflow shard cannot be reassigned.
+    assert controller.store.run(controller.run_id)['state'] in ('PAUSED', 'STOPPED')
     events = controller.store.events(controller.run_id)
     assert not any(e['kind'] == 'action.authorized' and e['agent_id'] == 'worker-0' for e in events)
     task = next(t for t in controller.store.tasks(controller.run_id) if t['shard'] == 0)
@@ -139,7 +140,9 @@ def test_expired_copied_bearer_token_is_rejected_without_stopping_team(controlle
     clock.advance(301)
     with pytest.raises(CredentialExpired):
         controller.claim(thief)
-    assert controller.store.run(controller.run_id)['state'] == 'RUNNING'
+    # Not stopped: the agent is quarantined and its unreassignable fixed shard pauses the run.
+    run = controller.store.run(controller.run_id)
+    assert run['state'] == 'PAUSED' and run['reason'] == 'agent quarantined: worker-0'
     rejected = [e['detail'] for e in controller.store.events(controller.run_id) if e['kind'] == 'credential.rejected']
     assert rejected and rejected[0]['agent_id'] == 'worker-0' and rejected[0]['key_id'] == thief.key_id
 

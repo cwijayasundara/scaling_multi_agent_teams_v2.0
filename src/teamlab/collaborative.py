@@ -7,7 +7,8 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from .agents import AgentTeam, ReplayModel
 from .board import Board
 from .artifacts import Artifacts
-from .security import RunStopped
+from .containment import quarantined
+from .security import AccessDenied, AgentQuarantined, RunStopped
 from .tracing import span
 
 # Scheduler round budget; behaviour profiles are sized against it.
@@ -75,6 +76,7 @@ class CollaborativeTeam(AgentTeam):
                 'workflow': 'authored' if authored else 'collaborative',
                 'code_execution': broker.profile if authored else 'trusted-baseline',
                 'agent_runtime': 'shared-python', 'deployment_qualified': False})
+        self.worker_ids = {i: controller.gateway.identity(token).agent_id for i, token in controller.worker_tokens.items()}
         self.workers = {i: self.worker(token) for i, token in controller.worker_tokens.items()}
         self.lead = self.coordinator()
         self.verifier = self.checker()
@@ -185,10 +187,15 @@ class CollaborativeTeam(AgentTeam):
                         self.turn(self.lead, c.lead, 'Plan or reprioritize work; publish if the report root is complete.', round_span)
                         if c.store.run(c.run_id)['state'] == 'COMPLETED':
                             break
+                        contained = quarantined(c.store, c.run_id)
                         with ThreadPoolExecutor(max_workers=c.workers) as pool:
-                            futures = [pool.submit(self.turn, self.workers[i], token, 'Work on one eligible task from the board.', round_span) for i, token in c.worker_tokens.items()]
+                            futures = [pool.submit(self.turn, self.workers[i], token, 'Work on one eligible task from the board.', round_span)
+                                       for i, token in c.worker_tokens.items() if self.worker_ids[i] not in contained]
                             for future in futures:
-                                future.result()
+                                try:
+                                    future.result()
+                                except (AccessDenied, AgentQuarantined):
+                                    pass  # Containment ended this worker's turn; its leases were released.
                         self.turn(self.verifier, c.verifier, 'Independently check submitted work.', round_span)
                         for task in self.board.list(c.lead):
                             if task['state'] == 'VERIFIED':

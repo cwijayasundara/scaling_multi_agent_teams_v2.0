@@ -15,6 +15,7 @@ from queue import Queue, Empty
 from .analytics import canonical, digest
 from . import dlp, tracing
 from .access import ACCESS_MONITOR, AccessPolicy, load_access_policy
+from .containment import strike
 from .identity import Credential, new_credential, verify_signature
 from .profiles import PROFILE_MONITOR, Profiles, load_profiles
 from .store import Store
@@ -41,6 +42,10 @@ class CredentialExpired(SecurityError):
 
 class AccessDenied(SecurityError):
     """The access policy refused this action; the run keeps going."""
+
+
+class AgentQuarantined(RunStopped):
+    """This agent's sessions were revoked by containment; its teammates may keep going."""
 
 
 @dataclass(frozen=True)
@@ -232,6 +237,7 @@ class Gateway:
         self.journal = Journal(store.root / "audit.jsonl")
         self.journal.verify()
         self._sessions: dict[str, _Session] = {}
+        self._revoked: dict[str, str] = {}  # bearer token -> quarantined agent id
         self._public_keys: dict[str, tuple[str, str]] = {}
         self.archive = None
         for monitor in self.monitors:
@@ -257,8 +263,17 @@ class Gateway:
     def _session(self, cred: Credential) -> _Session:
         session = self._sessions.get(cred.token) if isinstance(cred, Credential) else None
         if session is None:
+            if isinstance(cred, Credential) and cred.token in self._revoked:
+                raise AgentQuarantined(f"agent quarantined: {self._revoked[cred.token]}")
             raise SecurityError("invalid service identity")
         return session
+
+    def revoke_agent(self, agent_id: str) -> None:
+        """Delete every session of agent_id; its credentials then raise AgentQuarantined."""
+        for token, session in list(self._sessions.items()):
+            if session.identity.agent_id == agent_id:
+                self._revoked[token] = agent_id
+                self._sessions.pop(token, None)
 
     def identity(self, cred: Credential) -> Identity:
         try:
@@ -279,8 +294,9 @@ class Gateway:
             except CredentialExpired:
                 if session.expires_at <= time.time():
                     raise
-                # Still valid: the request signature check in call() decides.
-                return session.identity
+                # Still valid: the request signature check in call() decides,
+                # unless the rejection quarantined the agent (AgentQuarantined).
+                return self._session(cred).identity
             return self._session(cred).identity
 
     def refresh(self, cred: Credential) -> None:
@@ -302,6 +318,7 @@ class Gateway:
             with self.store.transaction() as db:
                 self.store.event(db, who.run_id, who.agent_id, "credential.rejected", {
                     "agent_id": who.agent_id, "key_id": cred.key_id, "reason": "refresh signature invalid"})
+            strike(self.store, self, who.run_id, who.agent_id, "credential.rejected", {"key_id": cred.key_id})
             raise CredentialExpired("credential expired; refresh requires the registered key")
         run = self.store.run(who.run_id)
         # The deadline is active()'s to enforce: it pauses the run with a reason.
@@ -393,6 +410,10 @@ class Gateway:
                 self.store.event(db, who.run_id, who.agent_id, "action.denied", {
                     "operation_id": operation_id, "action": action, "args_hash": digest(args),
                     "verdicts": [verdict], "trace": trace})
+            if attributes["agent_state"] == "RESTRICTED":
+                # A restricted agent reaching past its permitted classes is a further strike.
+                strike(self.store, self, who.run_id, who.agent_id, ACCESS_MONITOR,
+                       {"action": action, "sensitivity": attributes["sensitivity"]})
             raise AccessDenied(f"{ACCESS_MONITOR}: DENY on {who.agent_id}/{action} ({rule})")
         # Gateway code, not a monitor: replacing self.monitors cannot remove it.
         hits = [h for h in dlp.scan_args(args) if h["kind"] in dlp.SECRET_KINDS]
@@ -409,14 +430,14 @@ class Gateway:
             raise RunStopped(f"output filter stopped the entire team: {reason}")
         breach = self.profiles.check(who.agent_id, who.role, action, time.time())
         if breach:
-            verdict = {"monitor": PROFILE_MONITOR, "verdict": "PAUSE", **breach}
+            # Contain this agent, not the team: the breach is a strike.
+            agent_state = strike(self.store, self, who.run_id, who.agent_id, PROFILE_MONITOR, {"action": action, **breach})
+            verdict = {"monitor": PROFILE_MONITOR, "verdict": "CONTAIN", **breach, "agent_state": agent_state}
             with self.store.transaction() as db:
                 self.store.event(db, who.run_id, who.agent_id, "action.denied", {
                     "operation_id": operation_id, "action": action, "args_hash": digest(args),
                     "verdicts": [verdict], "trace": trace})
-            reason = f"{PROFILE_MONITOR}: PAUSE on {who.agent_id}/{action}"
-            self.store.stop(who.run_id, reason, "PAUSED")
-            raise RunStopped(f"behaviour profile paused the entire team: {reason}")
+            raise AccessDenied(f"{PROFILE_MONITOR}: CONTAIN on {who.agent_id}/{action} ({agent_state})")
         with self.store.connect() as context_db:
             # Spans are structure, not activity: keep them out of the monitor's window.
             # The pattern is a parameter: a literal % would break the PostgreSQL adapter.
@@ -466,15 +487,16 @@ class Gateway:
         # Check the run epoch in the same database transaction as all durable
         # action effects. Operator stop (including another process) uses the
         # same write lock. No stale result can commit after revocation.
-        failed = None
+        failed = contained = None
         try:
             with self.store.transaction() as db:
                 run = self.store.lock_run(db, who.run_id)
                 if run["state"] != "RUNNING" or run["epoch"] != who.epoch or time.time() >= run["deadline"]:
                     raise RunStopped("dispatch permit revoked")
                 # Containment may have changed while the monitors ran.
-                contained = self.store.agent_state(db, who.run_id, who.agent_id)["state"]
-                if not self.access.decide({**attributes, "agent_state": contained})[0]:
+                state = self.store.agent_state(db, who.run_id, who.agent_id)["state"]
+                if not self.access.decide({**attributes, "agent_state": state})[0]:
+                    contained = state
                     raise AccessDenied("agent containment changed")
                 limits = db.execute('SELECT * FROM run_limits WHERE run_id=?', (who.run_id,)).fetchone()
                 if run["calls"] >= (limits['tool_calls'] if limits else 400):
@@ -500,6 +522,14 @@ class Gateway:
                         "operation_id": operation_id, "action": action, "result_hash": digest(result),
                     })
         except Exception:
+            if contained is not None:
+                # The rollback left no trace of the refusal; record it on its own.
+                verdict = {"monitor": ACCESS_MONITOR, "verdict": "DENY", "rule": "containment-changed-at-dispatch",
+                    "attributes": {**attributes, "agent_state": contained}}
+                with self.store.transaction() as db:
+                    self.store.event(db, who.run_id, who.agent_id, "action.denied", {
+                        "operation_id": operation_id, "action": action, "args_hash": digest(args),
+                        "verdicts": [verdict], "trace": dict(trace)})
             if failed is not None:
                 # The rollback removed action.authorized; record the failure in its
                 # own transaction. Only the type: exception messages may carry data.

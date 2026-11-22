@@ -8,7 +8,7 @@ from teamlab.config_signing import ConfigIntegrityError
 from teamlab.controller import Controller
 from teamlab.fixture import generate
 from teamlab.profiles import PROFILE_MONITOR, load_profiles
-from teamlab.security import RuleMonitor, RunStopped
+from teamlab.security import AccessDenied, RuleMonitor, RunStopped
 from teamlab.triage import RuleTriage, triage_run
 
 SHIPPED = {"version": "profiles-v1", "roles": {
@@ -65,16 +65,21 @@ def test_shipped_file_matches_plan_values():
     assert json.loads(profiles.DEFAULT_PATH.read_text()) == SHIPPED
 
 
-def test_per_action_limit_pauses_and_records_rule(controller):
+def agent_state(c, agent_id):
+    with c.store.connect() as db:
+        return c.store.agent_state(db, c.run_id, agent_id)["state"]
+
+
+def test_per_action_limit_contains_agent_and_records_rule(controller):
     for i in range(10):
         controller.note(controller.worker_tokens[0], f"progress {i}")
-    with pytest.raises(RunStopped):
+    with pytest.raises(AccessDenied):
         controller.note(controller.worker_tokens[0], "one too many")
-    run = controller.store.run(controller.run_id)
-    assert run["state"] == "PAUSED" and run["reason"].startswith("behavior-profile-v1: PAUSE on worker-0/post_note")
+    assert controller.store.run(controller.run_id)["state"] == "RUNNING"
+    assert agent_state(controller, "worker-0") == "RESTRICTED"
     denied = [e for e in controller.store.events(controller.run_id) if e["kind"] == "action.denied"][-1]
-    assert denied["detail"]["verdicts"][0] == {"monitor": "behavior-profile-v1", "verdict": "PAUSE",
-        "rule": "max_calls_per_action", "observed": 11, "limit": 10}
+    assert denied["detail"]["verdicts"][0] == {"monitor": "behavior-profile-v1", "verdict": "CONTAIN",
+        "rule": "max_calls_per_action", "observed": 11, "limit": 10, "agent_state": "RESTRICTED"}
     # The breaching call was never authorized or dispatched.
     with controller.store.connect() as db:
         assert db.execute("SELECT count(*) FROM notes WHERE run_id=?", (controller.run_id,)).fetchone()[0] == 10
@@ -94,14 +99,15 @@ def test_rate_limit_uses_sixty_second_window(controller, clock, tmp_path, config
     for _ in range(60):
         clock.advance(0.01)
         controller.progress(controller.lead)
-    with pytest.raises(RunStopped):
+    with pytest.raises(AccessDenied):
         controller.progress(controller.lead)
-    assert profile_verdicts(controller) == [{"monitor": "behavior-profile-v1", "verdict": "PAUSE",
-        "rule": "max_calls_per_minute", "observed": 61, "limit": 60}]
-    assert controller.store.run(controller.run_id)["state"] == "PAUSED"
+    assert profile_verdicts(controller) == [{"monitor": "behavior-profile-v1", "verdict": "CONTAIN",
+        "rule": "max_calls_per_minute", "observed": 61, "limit": 60, "agent_state": "RESTRICTED"}]
+    assert controller.store.run(controller.run_id)["state"] == "RUNNING"
+    assert agent_state(controller, "coordinator") == "RESTRICTED"
 
 
-def test_repeated_failures_pause(controller):
+def test_repeated_failures_contain_the_agent(controller):
     cred = controller.worker_tokens[0]
     fence = controller.claim(cred)["fence"]
     controller.calculate(cred, fence)
@@ -110,11 +116,11 @@ def test_repeated_failures_pause(controller):
             controller.submit(cred, fence, "0" * 64)
         assert not isinstance(caught.value, RunStopped)
     assert controller.store.run(controller.run_id)["state"] == "RUNNING"
-    with pytest.raises(RunStopped):
+    with pytest.raises(AccessDenied):
         controller.inspect(cred, fence)
-    assert profile_verdicts(controller) == [{"monitor": "behavior-profile-v1", "verdict": "PAUSE",
-        "rule": "max_failures", "observed": 3, "limit": 3}]
-    assert controller.store.run(controller.run_id)["state"] == "PAUSED"
+    assert profile_verdicts(controller) == [{"monitor": "behavior-profile-v1", "verdict": "CONTAIN",
+        "rule": "max_failures", "observed": 3, "limit": 3, "agent_state": "RESTRICTED"}]
+    assert controller.store.run(controller.run_id)["state"] == "RUNNING"
 
 
 def test_profile_survives_monitor_replacement(controller):
@@ -127,9 +133,10 @@ def test_profile_survives_monitor_replacement(controller):
     controller.gateway.monitors = [AllowAll()]
     for i in range(10):
         controller.note(controller.worker_tokens[1], f"progress {i}")
-    with pytest.raises(RunStopped):
+    with pytest.raises(AccessDenied):
         controller.note(controller.worker_tokens[1], "one too many")
-    assert controller.store.run(controller.run_id)["reason"] == "behavior-profile-v1: PAUSE on worker-1/post_note"
+    assert agent_state(controller, "worker-1") == "RESTRICTED"
+    assert profile_verdicts(controller)[0]["verdict"] == "CONTAIN"
 
 
 def test_monitor_pause_counts_as_failure(controller):
@@ -158,16 +165,15 @@ def test_run_started_records_profile_hash(controller):
     assert started["detail"]["behavior_profile"] == {"version": "profiles-v1", "sha256": profiles.sha256}
 
 
-def test_profile_pause_triages_as_needs_human(controller):
+def test_profile_containment_triages_as_needs_human(controller):
     for i in range(10):
         controller.note(controller.worker_tokens[0], f"progress {i}")
-    with pytest.raises(RunStopped):
+    with pytest.raises(AccessDenied):
         controller.note(controller.worker_tokens[0], "one too many")
     created = triage_run(controller.store, controller.run_id, RuleTriage())
-    assert {d["alert_kind"] for d in created} == {"action.denied", "run.paused"}
+    assert {d["alert_kind"] for d in created} == {"action.denied", "agent.restricted"}
     for d in created:
         assert d["report"] == {"classification": "needs_human", "recommended_action": "escalate", "confidence": "medium"}
-        assert d["think"].startswith("behaviour profile threshold exceeded: ")
     denied = next(d for d in created if d["alert_kind"] == "action.denied")
     assert denied["think"] == "behaviour profile threshold exceeded: max_calls_per_action"
 

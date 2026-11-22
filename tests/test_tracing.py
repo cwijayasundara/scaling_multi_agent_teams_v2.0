@@ -221,17 +221,17 @@ def test_denied_action_is_traced_under_its_parent(controller):
 
 
 def test_profile_and_output_filter_denials_carry_trace(controller):
-    from teamlab.security import RunStopped
+    from teamlab.security import AccessDenied
     for i in range(10):
         controller.note(controller.worker_tokens[0], f'progress {i}')
-    with pytest.raises(RunStopped):
+    with pytest.raises(AccessDenied):
         controller.note(controller.worker_tokens[0], 'one too many')
     denied = [e for e in controller.store.events(controller.run_id) if e['kind'] == 'action.denied']
     assert len(denied) == 1 and denied[0]['detail']['trace']['span_id'] == denied[0]['detail']['operation_id']
 
 
 def test_failed_actions_are_traced_and_reach_triage_context(controller):
-    from teamlab.security import RunStopped
+    from teamlab.security import AccessDenied
     from teamlab.triage import RuleTriage, triage_run
     cred = controller.worker_tokens[0]
     fence = controller.claim(cred)['fence']
@@ -239,7 +239,7 @@ def test_failed_actions_are_traced_and_reach_triage_context(controller):
     for _ in range(3):
         with pytest.raises(SecurityError, match='does not match the owned calculation receipt'):
             controller.submit(cred, fence, '0' * 64)
-    with pytest.raises(RunStopped):
+    with pytest.raises(AccessDenied):
         controller.inspect(cred, fence)
     events = controller.store.events(controller.run_id)
     failed = [e for e in events if e['kind'] == 'action.failed']
@@ -254,8 +254,8 @@ def test_failed_actions_are_traced_and_reach_triage_context(controller):
     ops = {o['span_id']: o for o in trace_tree(controller.store, controller.run_id)['operations']}
     assert [ops[e['detail']['operation_id']]['status'] for e in failed] == ['failed'] * 3
     created = triage_run(controller.store, controller.run_id, RuleTriage())
-    pause = next(d for d in created if d['alert_kind'] == 'run.paused')
-    assert {e['seq'] for e in failed} <= set(pause['query']['events_examined'])
+    restricted = next(d for d in created if d['alert_kind'] == 'agent.restricted')
+    assert {e['seq'] for e in failed} <= set(restricted['query']['events_examined'])
     assert 'action.failed' not in {d['alert_kind'] for d in created}
 
 

@@ -11,7 +11,8 @@ import time
 from .analytics import canonical
 from .profiles import PROFILE_MONITOR
 
-ALERT_KINDS = frozenset({"action.denied", "run.stopped", "run.paused", "credential.rejected"})
+ALERT_KINDS = frozenset({"action.denied", "run.stopped", "run.paused", "credential.rejected",
+                         "agent.restricted", "agent.quarantined"})
 CLASSIFICATIONS = ("likely_true_positive", "likely_false_positive", "operational", "needs_human")
 ACTIONS = ("keep_stopped", "restart_clean", "raise_limits", "escalate")
 CONFIDENCES = ("low", "medium", "high")
@@ -22,7 +23,8 @@ DETERMINISTIC_MONITORS = ("output-filter-v1", "deterministic-rules-v1")
 DETERMINISTIC_STOPS = ("capability violation:", "request signature invalid:") + tuple(m + ": BLOCK on " for m in DETERMINISTIC_MONITORS)
 OPERATIONAL_STOPS = ("action budget", "inference budget", "run deadline exceeded")
 MONITOR_STOP = re.compile(r"^[a-z0-9-]+-v\d+: [A-Z]+ on ")
-PROFILE_STOP = PROFILE_MONITOR + ": PAUSE on "
+PROFILE_STOP = PROFILE_MONITOR + ": PAUSE on "  # runs recorded before containment
+QUARANTINE_STOP = "agent quarantined: "
 GATEWAY_STOPS = ("oversized action", "audit sink unavailable or corrupt", "monitor unavailable")
 SUBJECT = re.compile(r"(?:^|\s)([A-Za-z0-9_-]+)/[A-Za-z0-9_]+$")
 
@@ -45,10 +47,16 @@ class RuleTriage:
         monitor, decision = str(verdict.get("monitor", "")), verdict.get("verdict")
         if decision == "BLOCK" and monitor in DETERMINISTIC_MONITORS:
             return "likely_true_positive", "keep_stopped", "high", f"{monitor} blocked the action"
-        if decision == "PAUSE" and monitor == PROFILE_MONITOR:
+        if decision in ("PAUSE", "CONTAIN") and monitor == PROFILE_MONITOR:
             return "needs_human", "escalate", "medium", f"behaviour profile threshold exceeded: {verdict.get('rule')}"
         if decision == "PAUSE" and monitor.startswith("luna-"):
             return "needs_human", "escalate", "medium", f"{monitor} paused for review"
+        if alert["kind"] == "agent.restricted":
+            return ("needs_human", "escalate", "medium",
+                    f"agent restricted to board reads after a strike from {alert['detail'].get('source')}")
+        if alert["kind"] == "agent.quarantined":
+            return ("likely_true_positive", "escalate", "medium",
+                    f"agent quarantined after repeated strikes, last from {alert['detail'].get('source')}")
         if alert["kind"] == "credential.rejected":
             return ("likely_true_positive", "escalate", "medium",
                     "bearer token presented without or after its registered key")
@@ -56,6 +64,8 @@ class RuleTriage:
             if reason.startswith(PROFILE_STOP):
                 # The rule is in the action.denied verdict; the stop reason names the subject.
                 return "needs_human", "escalate", "medium", f"behaviour profile threshold exceeded: {reason}"
+            if reason.startswith(QUARANTINE_STOP):
+                return "needs_human", "escalate", "medium", f"quarantined agent's work cannot be reassigned: {reason}"
             if reason.startswith(DETERMINISTIC_STOPS):
                 return "likely_true_positive", "keep_stopped", "high", f"deterministic enforcement: {reason}"
             if reason == "monitor unavailable" or (reason.startswith("luna-") and ": PAUSE on " in reason):

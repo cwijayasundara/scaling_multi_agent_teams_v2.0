@@ -7,7 +7,7 @@ from teamlab.board import Board
 from teamlab.config_signing import ConfigIntegrityError
 from teamlab.controller import Controller
 from teamlab.fixture import generate
-from teamlab.security import CAPABILITIES, AccessDenied, RuleMonitor
+from teamlab.security import CAPABILITIES, AccessDenied, AgentQuarantined, RuleMonitor
 
 SHIPPED = {"version": "access-v1",
  "sensitivity": {
@@ -115,17 +115,20 @@ def test_set_agent_state_emits_change_once(controller):
 
 def test_restricted_agent_reads_board_but_cannot_claim_or_write(controller):
     board = Board(controller)
+    # Work on the board makes this a collaborative run, where a contained worker's work is reassignable.
+    board.create(controller.lead, "Report", "Exact totals", list(range(controller.workers)))
     cred = controller.worker_tokens[0]
     set_state(controller, "worker-0", "RESTRICTED")
     board.list(cred)
     board.notes(cred)
     with pytest.raises(AccessDenied):
         controller.claim(cred)
-    with pytest.raises(AccessDenied):
+    # Reaching past RESTRICTED is a further strike: worker-0 is now quarantined.
+    with pytest.raises(AgentQuarantined):
         controller.note(cred, "hello")
     assert controller.store.run(controller.run_id)["state"] == "RUNNING"
     denied = access_denials(controller)
-    assert [e["detail"]["action"] for e in denied] == ["claim_task", "post_note"]
+    assert [e["detail"]["action"] for e in denied] == ["claim_task"]
     claim = denied[0]["detail"]
     assert claim["verdicts"] == [{"monitor": "access-policy-v1", "verdict": "DENY", "rule": "state-forbids-sensitivity",
         "attributes": {"role": "worker", "action": "claim_task", "sensitivity": "row-data",
@@ -168,7 +171,7 @@ def test_containment_change_before_dispatch_is_refused(controller):
 
 
 def test_access_policy_runs_before_output_filter(controller):
-    set_state(controller, "worker-0", "RESTRICTED")
+    set_state(controller, "worker-0", "QUARANTINED", 2)
     with pytest.raises(AccessDenied):
         controller.note(controller.worker_tokens[0], "here: sk-proj-" + "b" * 40)
     assert controller.store.run(controller.run_id)["state"] == "RUNNING"

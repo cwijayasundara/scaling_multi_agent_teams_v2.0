@@ -101,7 +101,11 @@ def test_rule_mapping_covers_known_reasons():
     assert assess('run.stopped', {'reason': 'operator found a bad input'})[:3] == ('operational', 'restart_clean', 'low')
     assert assess('run.paused', {'reason': 'oversized action'})[:3] == ('needs_human', 'escalate', 'low')
     assert assess('credential.rejected', {'agent_id': 'worker-1', 'key_id': 'k', 'reason': 'refresh signature invalid'}, 'worker-1') == ('likely_true_positive', 'escalate', 'medium', [5, 3])
-    assert ALERT_KINDS == {'action.denied', 'run.stopped', 'run.paused', 'credential.rejected'}
+    assert assess('action.denied', {'verdicts': [{'monitor': 'behavior-profile-v1', 'verdict': 'CONTAIN', 'rule': 'max_failures'}]}, 'worker-1')[:3] == human
+    assert assess('agent.restricted', {'agent_id': 'worker-1', 'strikes': 1, 'source': 'behavior-profile-v1'})[:3] == human
+    assert assess('agent.quarantined', {'agent_id': 'worker-1', 'strikes': 2, 'source': 'credential.rejected'})[:3] == ('likely_true_positive', 'escalate', 'medium')
+    assert assess('run.paused', {'reason': 'agent quarantined: verifier'})[:3] == human
+    assert ALERT_KINDS == {'action.denied', 'run.stopped', 'run.paused', 'credential.rejected', 'agent.restricted', 'agent.quarantined'}
 
 
 def test_model_triage_accepts_supported_evidence(controller):
