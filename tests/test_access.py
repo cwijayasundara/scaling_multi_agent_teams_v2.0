@@ -143,12 +143,13 @@ def test_quarantined_agent_is_denied_everything(controller):
     board = Board(controller)
     cred = controller.worker_tokens[0]
     set_state(controller, "worker-0", "QUARANTINED", 2)
+    # The store's QUARANTINED state is authoritative: the gateway refuses before any access decision.
     for attempt in (lambda: board.list(cred), lambda: board.notes(cred), lambda: controller.claim(cred),
                     lambda: controller.note(cred, "hello")):
-        with pytest.raises(AccessDenied):
+        with pytest.raises(AgentQuarantined):
             attempt()
     assert controller.store.run(controller.run_id)["state"] == "RUNNING"
-    assert len(access_denials(controller)) == 4
+    assert not any(e["kind"] == "action.authorized" for e in controller.store.events(controller.run_id))
 
 
 def test_containment_change_before_dispatch_is_refused(controller):
@@ -172,12 +173,13 @@ def test_containment_change_before_dispatch_is_refused(controller):
 
 def test_access_policy_runs_before_output_filter(controller):
     set_state(controller, "worker-0", "QUARANTINED", 2)
-    with pytest.raises(AccessDenied):
+    with pytest.raises(AgentQuarantined):
         controller.note(controller.worker_tokens[0], "here: sk-proj-" + "b" * 40)
+    # Refused before the output filter: a quarantined agent's secret cannot stop the team.
     assert controller.store.run(controller.run_id)["state"] == "RUNNING"
     verdicts = [v for e in controller.store.events(controller.run_id) if e["kind"] == "action.denied"
                 for v in e["detail"]["verdicts"]]
-    assert [v["monitor"] for v in verdicts] == ["access-policy-v1"]
+    assert verdicts == []
 
 
 def test_run_started_records_access_policy(controller):

@@ -228,3 +228,54 @@ def test_states_never_move_up(collab):
     for module in (teamlab.cli, teamlab.monitoring):
         source = open(module.__file__).read()
         assert "set_agent_state" not in source and "unquarantine" not in source.lower()
+
+
+
+def test_quarantine_during_refresh_cannot_be_undone(tmp_path, clock, monkeypatch):
+    # The strike lands after the refresh read the session and before it publishes the new one.
+    import teamlab.security
+    source = tmp_path / "input.csv"
+    generate(source, 40)
+    c = Controller(tmp_path / "collab", source, workers=2, mode="sdk-replay")
+    CollaborativeTeam(c, replay=True)  # collaborative: a worker's quarantine does not pause the run
+    cred = c.worker_tokens[0]
+    clock.advance(c.gateway.credential_ttl - c.gateway.refresh_margin + 1)  # inside the refresh margin
+    real_token = teamlab.security.secrets.token_urlsafe
+    fired = []
+
+    def token_urlsafe(n):
+        if not fired:
+            fired.append(1)
+            strike(c.store, c.gateway, c.run_id, "worker-0", "credential.rejected", {})
+        return real_token(n)
+
+    monkeypatch.setattr(teamlab.security.secrets, "token_urlsafe", token_urlsafe)
+    before = c.store.run(c.run_id)["model_calls"]
+    with pytest.raises(AgentQuarantined):
+        c.gateway.identity(cred)  # not a KeyError, and not a fresh identity
+    assert fired and state(c, "worker-0") == "QUARANTINED"
+    assert c.store.run(c.run_id)["state"] == "RUNNING"
+    assert not any(s.identity.agent_id == "worker-0" for s in c.gateway._sessions.values())
+    with pytest.raises(AgentQuarantined):
+        c.gateway.identity(cred)
+    with pytest.raises(AgentQuarantined):
+        c.gateway.reserve_inference(cred, "agent")
+    assert c.store.run(c.run_id)["model_calls"] == before
+    assert not kinds(c, "inference.requested")
+
+
+def test_store_quarantine_is_authoritative_without_revocation(collab):
+    # Another gateway process (or a direct store write) quarantined the agent: this gateway never revoked it.
+    c, _ = collab
+    cred = c.worker_tokens[0]
+    with c.store.transaction() as db:
+        c.store.lock_run(db, c.run_id)
+        c.store.set_agent_state(db, c.run_id, "worker-0", "QUARANTINED", 2, "other gateway")
+    before = c.store.run(c.run_id)["model_calls"]
+    with pytest.raises(AgentQuarantined):
+        c.gateway.reserve_inference(cred, "agent")
+    with pytest.raises(AgentQuarantined):
+        c.gateway.record_inference(cred, object())
+    with pytest.raises(AgentQuarantined):
+        c.claim(cred)
+    assert c.store.run(c.run_id)["model_calls"] == before

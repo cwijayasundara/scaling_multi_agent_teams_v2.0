@@ -238,6 +238,7 @@ class Gateway:
         self.journal.verify()
         self._sessions: dict[str, _Session] = {}
         self._revoked: dict[str, str] = {}  # bearer token -> quarantined agent id
+        self._quarantined: set[str] = set()  # agent ids revoke_agent has quarantined; never shrinks
         self._public_keys: dict[str, tuple[str, str]] = {}
         self.archive = None
         for monitor in self.monitors:
@@ -266,10 +267,14 @@ class Gateway:
             if isinstance(cred, Credential) and cred.token in self._revoked:
                 raise AgentQuarantined(f"agent quarantined: {self._revoked[cred.token]}")
             raise SecurityError("invalid service identity")
+        if session.identity.agent_id in self._quarantined:
+            raise AgentQuarantined(f"agent quarantined: {session.identity.agent_id}")
         return session
 
     def revoke_agent(self, agent_id: str) -> None:
         """Delete every session of agent_id; its credentials then raise AgentQuarantined."""
+        # Mark first: a refresh publishing concurrently re-checks this set after publishing.
+        self._quarantined.add(agent_id)
         for token, session in list(self._sessions.items()):
             if session.identity.agent_id == agent_id:
                 self._revoked[token] = agent_id
@@ -328,14 +333,29 @@ class Gateway:
         with self.store.transaction() as db:
             self.store.event(db, who.run_id, who.agent_id, "credential.refreshed", {
                 "agent_id": who.agent_id, "key_id": cred.key_id, "expires_at": expires_at})
+        if who.agent_id in self._quarantined:
+            raise AgentQuarantined(f"agent quarantined: {who.agent_id}")
         # Publish the new session before retiring the old one so no reader
         # holding either token ever misses.
         self._sessions[token] = _Session(who, session.key_id, expires_at)
+        if who.agent_id in self._quarantined:
+            # revoke_agent ran between the check above and the publish: withdraw it.
+            self._revoked[token] = who.agent_id
+            self._sessions.pop(token, None)
+            raise AgentQuarantined(f"agent quarantined: {who.agent_id}")
         cred._rotate(token, expires_at)
-        del self._sessions[old_token]
+        self._sessions.pop(old_token, None)
+
+    def _require_not_quarantined(self, db, who: Identity) -> None:
+        """The store's agent_states is the source of truth, shared by every gateway process."""
+        if self.store.agent_state(db, who.run_id, who.agent_id)["state"] == "QUARANTINED":
+            self.revoke_agent(who.agent_id)
+            raise AgentQuarantined(f"agent quarantined: {who.agent_id}")
 
     def active(self, token: Credential):
         who = self.identity(token)
+        with self.store.connect() as db:
+            self._require_not_quarantined(db, who)
         run = self.store.run(who.run_id)
         if run["state"] != "RUNNING" or run["epoch"] != who.epoch:
             raise RunStopped("run is stopped, paused, completed or revoked")
@@ -357,6 +377,7 @@ class Gateway:
             run = self.store.lock_run(db, who.run_id)
             if run["state"] != "RUNNING" or run["epoch"] != who.epoch:
                 raise RunStopped("inference authorization revoked")
+            self._require_not_quarantined(db, who)
             limits = db.execute('SELECT * FROM run_limits WHERE run_id=?', (who.run_id,)).fetchone()
             exhausted = run["model_calls"] >= (limits['model_calls'] if limits else 100)
             if exhausted:
