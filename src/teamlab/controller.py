@@ -13,16 +13,19 @@ from .config_signing import verify_all
 from .fixture import read_records, shard_for
 from .profiles import load_profiles
 from .security import CREDENTIAL_TTL_SECONDS, Gateway, RunStopped, SecurityError
-from .store import Store
+from .store import WORKFLOWS, Store
 from .tracing import span, trace_tree
 
 
 class Controller:
-    def __init__(self, root: Path, input_path: Path, workers: int = 4, mode: str = "scripted", monitors=None, database_url=None, model_call_limit=100, tool_call_limit=400, spend_budget=None, plane=None, credential_ttl=CREDENTIAL_TTL_SECONDS, provider_key_source="none"):
+    def __init__(self, root: Path, input_path: Path, workers: int = 4, mode: str = "scripted", monitors=None, database_url=None, model_call_limit=100, tool_call_limit=400, spend_budget=None, plane=None, credential_ttl=CREDENTIAL_TTL_SECONDS, provider_key_source="none", workflow="fixed"):
         if not 1 <= workers <= 8:
             raise ValueError("workers must be between 1 and 8")
         if mode not in ("scripted", "live", "sdk-replay"):
             raise ValueError("unknown execution mode")
+        if workflow not in WORKFLOWS:
+            raise ValueError("unknown workflow")
+        self.workflow = workflow
         if not 1 <= model_call_limit <= 1000 or not 1 <= tool_call_limit <= 4000:
             raise ValueError('run call limits exceed supported bounds')
         self.spend_budget = spend_budget
@@ -47,10 +50,11 @@ class Controller:
                 self.run_id, self.input_hash, workers, mode, time.time(), time.time() + 1200,
             ))
             db.execute("INSERT INTO run_limits VALUES (?,?,?)", (self.run_id, model_call_limit, tool_call_limit))
+            self.store.set_run_attribute(db, self.run_id, "workflow", workflow)
             for shard in range(workers):
                 db.execute("INSERT INTO tasks(run_id,shard) VALUES (?,?)", (self.run_id, shard))
             self.store.event(db, self.run_id, "controller", "run.started", {
-                "mode": mode, "input_hash": self.input_hash, "workers": workers,
+                "mode": mode, "workflow": workflow, "input_hash": self.input_hash, "workers": workers,
                 "execution_profile": "trusted-tools-only; no model-written code or host shell",
                 "provider_key_source": provider_key_source,
                 "behavior_profile": {"version": profiles.version, "sha256": profiles.sha256},

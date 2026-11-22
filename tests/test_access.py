@@ -120,7 +120,9 @@ def test_set_agent_state_emits_change_once(controller):
 
 def test_restricted_agent_reads_board_but_cannot_claim_or_write(controller):
     board = Board(controller)
-    # Work on the board makes this a collaborative run, where a contained worker's work is reassignable.
+    # A collaborative run, where a contained worker's work is reassignable.
+    with controller.store.transaction() as db:
+        controller.store.set_run_attribute(db, controller.run_id, "workflow", "collaborative")
     board.create(controller.lead, "Report", "Exact totals", list(range(controller.workers)))
     cred = controller.worker_tokens[0]
     set_state(controller, "worker-0", "RESTRICTED")

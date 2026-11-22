@@ -46,6 +46,9 @@ CREATE TABLE IF NOT EXISTS agent_states (
  run_id TEXT NOT NULL, agent_id TEXT NOT NULL, state TEXT NOT NULL, strikes INTEGER NOT NULL,
  reason TEXT NOT NULL, updated REAL NOT NULL, PRIMARY KEY(run_id, agent_id)
 );
+CREATE TABLE IF NOT EXISTS run_attributes (
+ run_id TEXT NOT NULL, name TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(run_id, name)
+);
 CREATE TABLE IF NOT EXISTS alert_acks (
  run_id TEXT NOT NULL, alert_seq INTEGER NOT NULL, acknowledged_at REAL NOT NULL,
  acknowledged_by TEXT NOT NULL, note TEXT NOT NULL,
@@ -54,6 +57,7 @@ CREATE TABLE IF NOT EXISTS alert_acks (
 """
 
 AGENT_STATES = ("ACTIVE", "RESTRICTED", "QUARANTINED")
+WORKFLOWS = ("fixed", "collaborative", "authored")
 
 
 class Store:
@@ -123,6 +127,20 @@ class Store:
         if current["state"] != state:
             Store.event(db, run_id, "controller", "agent.state_changed", {
                 "agent_id": agent_id, "from": current["state"], "to": state, "strikes": strikes, "reason": reason[:1000]})
+
+    @staticmethod
+    def run_attribute(db, run_id: str, name: str) -> str | None:
+        """A recorded run attribute (e.g. workflow) inside the caller's transaction; None for legacy runs."""
+        row = db.execute("SELECT value FROM run_attributes WHERE run_id=? AND name=?", (run_id, name)).fetchone()
+        return row["value"] if row else None
+
+    @staticmethod
+    def set_run_attribute(db, run_id: str, name: str, value: str):
+        """Upsert a run attribute inside the caller's transaction."""
+        if db.execute("SELECT 1 FROM run_attributes WHERE run_id=? AND name=?", (run_id, name)).fetchone():
+            db.execute("UPDATE run_attributes SET value=? WHERE run_id=? AND name=?", (value, run_id, name))
+        else:
+            db.execute("INSERT INTO run_attributes(run_id,name,value) VALUES (?,?,?)", (run_id, name, value))
 
     def lock_run(self, db, run_id):
         suffix = ' FOR UPDATE' if self.database_url else ''

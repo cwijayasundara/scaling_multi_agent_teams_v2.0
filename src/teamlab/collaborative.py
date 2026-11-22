@@ -71,7 +71,10 @@ class CollaborativeTeam(AgentTeam):
         self.checkpointer = DurableSaver(controller.store, controller.run_id)
         if authored and broker is None:
             raise ValueError('authored workflow requires an isolated execution broker')
+        controller.workflow = 'authored' if authored else 'collaborative'
         with controller.store.transaction() as db:
+            # Containment reads this attribute to decide whether a worker's work is reassignable.
+            controller.store.set_run_attribute(db, controller.run_id, 'workflow', controller.workflow)
             controller.store.event(db, controller.run_id, 'controller', 'execution.configured', {
                 'workflow': 'authored' if authored else 'collaborative',
                 'code_execution': broker.profile if authored else 'trusted-baseline',

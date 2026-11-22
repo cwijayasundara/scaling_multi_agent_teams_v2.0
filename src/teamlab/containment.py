@@ -5,7 +5,7 @@ up. A quarantined agent loses its sessions and its leases. Only when its work
 cannot be reassigned (coordinator, verifier, or a fixed-workflow worker) is the
 run paused; deterministic blocks still stop the whole team elsewhere.
 """
-from .store import AGENT_STATES
+from .store import AGENT_STATES, Store
 
 # Roles whose quarantine leaves work nobody else can take over.
 _UNREASSIGNABLE_ROLES = ("coordinator", "verifier")
@@ -16,7 +16,11 @@ def _rank(state: str) -> int:
 
 
 def _collaborative(db, run_id: str) -> bool:
-    """Collaborative runs record their workflow and keep work on the shared board."""
+    """Whether the run's work is on the shared board, from its recorded workflow."""
+    workflow = Store.run_attribute(db, run_id, "workflow")
+    if workflow is not None:
+        return workflow != "fixed"
+    # Legacy runs recorded before run_attributes: infer from the board.
     if db.execute("SELECT 1 FROM events WHERE run_id=? AND kind=?", (run_id, "execution.configured")).fetchone():
         return True
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work'").fetchone():

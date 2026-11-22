@@ -23,7 +23,7 @@ def controller(tmp_path):
 def collab(tmp_path):
     source = tmp_path / "input.csv"
     generate(source, rows=100, seed=3)
-    c = Controller(tmp_path / "collab", source, mode="sdk-replay")
+    c = Controller(tmp_path / "collab", source, mode="sdk-replay", workflow="collaborative")
     b = Board(c)
     root = b.create(c.lead, "Report", "Full coverage and exact totals", list(range(c.workers)))
     b.split(c.lead, root["id"], [{"title": f"Analyze {p}", "criteria": "Exact results", "partitions": [p]} for p in range(c.workers)])
@@ -279,3 +279,51 @@ def test_store_quarantine_is_authoritative_without_revocation(collab):
     with pytest.raises(AgentQuarantined):
         c.claim(cred)
     assert c.store.run(c.run_id)["model_calls"] == before
+
+
+
+def workflow_attribute(c):
+    with c.store.connect() as db:
+        return c.store.run_attribute(db, c.run_id, "workflow")
+
+
+def test_workflow_is_recorded_explicitly(tmp_path):
+    source = tmp_path / "input.csv"
+    generate(source, 40)
+    fixed = Controller(tmp_path / "fixed", source, workers=2)
+    assert workflow_attribute(fixed) == "fixed"
+    assert kinds(fixed, "run.started")[0]["detail"]["workflow"] == "fixed"
+    collaborative = Controller(tmp_path / "collaborative", source, workers=2, mode="sdk-replay", workflow="collaborative")
+    assert workflow_attribute(collaborative) == "collaborative"
+    with pytest.raises(ValueError, match="unknown workflow"):
+        Controller(tmp_path / "bad", source, workers=2, workflow="improvised")
+    # A team built over a default controller records the workflow it actually runs.
+    upgraded = Controller(tmp_path / "upgraded", source, workers=2, mode="sdk-replay")
+    CollaborativeTeam(upgraded, replay=True)
+    assert workflow_attribute(upgraded) == "collaborative"
+
+
+def test_containment_reads_the_recorded_workflow(tmp_path):
+    source = tmp_path / "input.csv"
+    generate(source, 40)
+    # Recorded collaborative, with no board rows or execution.configured: a worker is reassignable.
+    c = Controller(tmp_path / "collaborative", source, workers=2, mode="sdk-replay", workflow="collaborative")
+    strike(c.store, c.gateway, c.run_id, "worker-0", "credential.rejected", {})
+    assert c.store.run(c.run_id)["state"] == "RUNNING"
+    # Recorded fixed wins over the legacy heuristic's signal.
+    f = Controller(tmp_path / "fixed", source, workers=2)
+    with f.store.transaction() as db:
+        f.store.event(db, f.run_id, "controller", "execution.configured", {"workflow": "collaborative"})
+    strike(f.store, f.gateway, f.run_id, "worker-0", "credential.rejected", {})
+    assert f.store.run(f.run_id)["reason"] == "agent quarantined: worker-0"
+
+
+def test_legacy_run_without_recorded_workflow_uses_heuristic(tmp_path):
+    source = tmp_path / "input.csv"
+    generate(source, 40)
+    c = Controller(tmp_path / "legacy", source, workers=2, mode="sdk-replay")
+    with c.store.transaction() as db:
+        db.execute("DELETE FROM run_attributes WHERE run_id=?", (c.run_id,))
+        c.store.event(db, c.run_id, "controller", "execution.configured", {"workflow": "collaborative"})
+    strike(c.store, c.gateway, c.run_id, "worker-0", "credential.rejected", {})
+    assert c.store.run(c.run_id)["state"] == "RUNNING"

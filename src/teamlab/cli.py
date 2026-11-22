@@ -81,7 +81,7 @@ def execute(args):
         raise ValueError('--require-external-audit requires a qualified --audit-bucket')
     c = Controller(root, input_path, workers=args.workers, mode=args.mode, monitors=monitors, database_url=os.environ.get("TEAMLAB_DATABASE_URL"),
         model_call_limit=args.model_call_limit, tool_call_limit=args.tool_call_limit, spend_budget=budget, plane=plane,
-        provider_key_source=getattr(args, "provider_key_source", "none"))
+        provider_key_source=getattr(args, "provider_key_source", "none"), workflow=args.workflow)
     c.gateway.archive = plane.archive if plane is not None else archive
     print(json.dumps({"run_id": c.run_id, "mode": args.mode, "root": str(c.root), "state": "RUNNING"}), flush=True)
     try:
