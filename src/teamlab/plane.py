@@ -18,6 +18,7 @@ import re
 import secrets
 import shutil
 import socket
+import ssl
 import struct
 import subprocess
 import sys
@@ -27,7 +28,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from http.server import BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .analytics import canonical
@@ -113,10 +114,14 @@ def expected_flags(service, archive_credentials):
     }
 
 
-def rpc(path, token, payload, timeout=30, *, tls):
-    """Call a service over mutual TLS. tls holds ca, client_cert, client_key, service and pin."""
+def rpc(path, token, payload, timeout=30, *, tls, context=None):
+    """Call a service over mutual TLS. tls holds ca, client_cert, client_key, service and pin.
+
+    context: a client SSLContext already built from tls (PlaneClient caches one); None builds it.
+    """
     body = {**payload, 'token': token}
-    context = client_context(tls['client_cert'], tls['client_key'], tls['ca'])
+    if context is None:
+        context = client_context(tls['client_cert'], tls['client_key'], tls['ca'])
     with socket.socket(socket.AF_UNIX) as raw:
         raw.settimeout(timeout)
         try:
@@ -331,23 +336,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 def serve_proxy(token, upstream, stop, context):
     if 'OPENAI_API_KEY' not in os.environ or any(name in os.environ for name in forbidden_for('model-proxy', False)):
         raise SecurityError('model proxy credential boundary rejected')
-    from http.server import ThreadingHTTPServer
-
-    class TLSServer(ThreadingHTTPServer):
-        def finish_request(self, request, client_address):
-            # Handshake in the per-connection thread so a stalled client cannot block accept.
-            request.settimeout(30)
-            try:
-                request = context.wrap_socket(request, server_side=True)
-            except OSError:
-                return
-            with request:
-                super().finish_request(request, client_address)
-
-        def handle_error(self, request, client_address):
-            return
-
-    server = TLSServer(('127.0.0.1', 0), ProxyHandler)
+    server = TLSServer(('127.0.0.1', 0), ProxyHandler, context)
     server.token = token
     server.api_key = os.environ['OPENAI_API_KEY']
     server.upstream = upstream
@@ -362,15 +351,42 @@ def serve_proxy(token, upstream, stop, context):
         server.shutdown()
 
 
+class TLSServer(ThreadingHTTPServer):
+    """HTTPS with client certificates; only TLS and connection failures are silent."""
+
+    def __init__(self, address, handler, context):
+        self.context = context
+        super().__init__(address, handler)
+
+    def finish_request(self, request, client_address):
+        # Handshake in the per-connection thread so a stalled client cannot block accept.
+        request.settimeout(30)
+        try:
+            request = self.context.wrap_socket(request, server_side=True)
+        except OSError:
+            return
+        with request:
+            super().finish_request(request, client_address)
+
+    def handle_error(self, request, client_address):
+        if isinstance(sys.exc_info()[1], (ssl.SSLError, ConnectionError)):
+            return  # a refused or dropped peer; the refusal is the expected outcome
+        super().handle_error(request, client_address)
+
+
 class RemoteArchive:
-    def __init__(self, path, token, tls):
-        self.path, self.token, self.tls = path, token, tls
+    def __init__(self, path, token, tls, context=None):
+        # tls and context are callables; context returns the owner's cached client SSLContext.
+        self.path, self.token, self.tls, self.context = path, token, tls, context
+
+    def _rpc(self, payload):
+        return rpc(self.path, self.token, payload, tls=self.tls(), context=self.context() if self.context else None)
 
     def preflight(self):
-        rpc(self.path, self.token, {'operation': 'preflight'}, tls=self.tls())
+        self._rpc({'operation': 'preflight'})
 
     def append(self, record):
-        rpc(self.path, self.token, {'operation': 'append', 'record': record}, tls=self.tls())
+        self._rpc({'operation': 'append', 'record': record})
 
 
 class PlaneClient:
@@ -381,7 +397,9 @@ class PlaneClient:
             raise SecurityError('control-plane descriptor must be private')
         self.model_base = self.meta.get('model_base')
         self.model_token = self.meta.get('model_token')
-        self.archive = RemoteArchive(self.meta['gateway_socket'], self.meta['gateway_token'], lambda: self.tls('gateway'))
+        self._ssl_context = None
+        self.archive = RemoteArchive(self.meta['gateway_socket'], self.meta['gateway_token'], lambda: self.tls('gateway'),
+                                     self.client_ssl_context)
 
     def tls(self, service):
         tls = self.meta['tls']
@@ -389,11 +407,14 @@ class PlaneClient:
             'service': service, 'pin': tls['pins'][service]}
 
     def client_ssl_context(self):
-        tls = self.meta['tls']
-        return client_context(tls['client_cert'], tls['client_key'], tls['ca'])
+        """One client context per descriptor, shared by every rpc and the model client."""
+        if self._ssl_context is None:
+            tls = self.meta['tls']
+            self._ssl_context = client_context(tls['client_cert'], tls['client_key'], tls['ca'])
+        return self._ssl_context
 
     def health(self, service, timeout=30):
-        return rpc(self.meta[service + '_socket'], self.meta[service + '_token'], {'operation': 'health'}, timeout, tls=self.tls(service))
+        return rpc(self.meta[service + '_socket'], self.meta[service + '_token'], {'operation': 'health'}, timeout, tls=self.tls(service), context=self.client_ssl_context())
 
     def _status(self, service):
         path = Path(self.meta['status'])
@@ -420,11 +441,11 @@ class PlaneClient:
 
     def grade(self, records, candidate):
         self._require('grader')
-        return rpc(self.meta['grader_socket'], self.meta['grader_token'], {'operation': 'grade', 'records': records, 'candidate': candidate}, tls=self.tls('grader'))['verdict']
+        return rpc(self.meta['grader_socket'], self.meta['grader_token'], {'operation': 'grade', 'records': records, 'candidate': candidate}, tls=self.tls('grader'), context=self.client_ssl_context())['verdict']
 
     def integrate(self, request):
         self._require('integration')
-        return rpc(self.meta['integration_socket'], self.meta['integration_token'], {'operation': 'integrate', **request}, tls=self.tls('integration'))['commit']
+        return rpc(self.meta['integration_socket'], self.meta['integration_token'], {'operation': 'integrate', **request}, tls=self.tls('integration'), context=self.client_ssl_context())['commit']
 
     def proxy_health(self, timeout=3):
         base = urllib.parse.urlsplit(self.model_base)

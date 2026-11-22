@@ -346,17 +346,20 @@ def main(argv=None):
             from openai import OpenAI
             from .behavior import BehaviorReviewer
             budget = spend_budget(args)
-            client_args = {'timeout': 45, 'max_retries': 0, 'http_client': budget.client()}
+            plane = None
             if args.control_plane:
                 from .plane import PlaneClient, separate_runtime_credentials
                 plane = PlaneClient(Path(args.control_plane))
                 plane.preflight()
                 separate_runtime_credentials()
-                client_args['http_client'] = budget.client(verify=plane.client_ssl_context())
-                client_args['api_key'] = plane.model_token
-                client_args['base_url'] = plane.model_base
             elif not os.environ.get('OPENAI_API_KEY'):
                 raise ValueError('behavioral review requires live provider access')
+            # One HTTP client, built with the trust it needs.
+            client_args = {'timeout': 45, 'max_retries': 0,
+                           'http_client': budget.client(verify=plane.client_ssl_context() if plane is not None else None)}
+            if plane is not None:
+                client_args['api_key'] = plane.model_token
+                client_args['base_url'] = plane.model_base
             reviewer = BehaviorReviewer(OpenAI(**client_args))
             if args.command == 'review-behavior':
                 result = reviewer.review_run(Store(Path(args.root), database_url=os.environ.get('TEAMLAB_DATABASE_URL')), args.run)

@@ -8,6 +8,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 import pytest
@@ -173,3 +174,87 @@ def test_live_model_client_reaches_proxy_over_mtls(plane):
     response = model.responses.create(model='gpt-6-luna', input='ping', max_output_tokens=16)
     assert response.id == 'resp_test' and upstream.seen == 'Bearer sk-plane-test'
     model.close()
+
+
+
+def _descriptor(tmp_path):
+    pki = issue_plane_pki(tmp_path / 'pki', ('grader', 'integration', 'gateway', 'model-proxy'))
+    meta = {'model_base': 'https://127.0.0.1:1', 'model_token': 't', 'gateway_socket': str(tmp_path / 'gw.sock'),
+            'gateway_token': 'g', 'grader_socket': str(tmp_path / 'missing.sock'), 'grader_token': 'r',
+            'tls': {'ca': pki['ca'], 'client_cert': pki['client_cert'], 'client_key': pki['client_key'],
+                    'pins': {name: entry['pin'] for name, entry in pki['servers'].items()}}}
+    path = tmp_path / 'plane.json'
+    path.write_text(json.dumps(meta))
+    path.chmod(0o600)
+    return tmp_path
+
+
+def test_plane_client_builds_its_ssl_context_once(tmp_path, monkeypatch):
+    built = []
+    real = teamlab.plane.client_context
+    monkeypatch.setattr(teamlab.plane, 'client_context', lambda *a: built.append(a) or real(*a))
+    client = teamlab.plane.PlaneClient(_descriptor(tmp_path))
+    contexts = {id(client.client_ssl_context()), id(client.client_ssl_context()), id(client.archive.context())}
+    for _ in range(3):
+        with pytest.raises(SecurityError, match='unavailable'):
+            client.health('grader', timeout=1)  # rpc reuses the cached context
+        with pytest.raises(SecurityError, match='unavailable'):
+            client.archive.append({'r': 1})
+    assert len(built) == 1 and len(contexts) == 1
+
+
+def test_tls_server_suppresses_only_handshake_errors(capsys):
+    server = teamlab.plane.TLSServer(('127.0.0.1', 0), BaseHTTPRequestHandler, context=None)
+    try:
+        for quiet in (ssl.SSLError('handshake'), ConnectionResetError('reset')):
+            try:
+                raise quiet
+            except OSError:
+                server.handle_error(None, ('127.0.0.1', 1))
+        assert capsys.readouterr().err == ''
+        try:
+            raise RuntimeError('handler bug')
+        except RuntimeError:
+            server.handle_error(None, ('127.0.0.1', 1))
+        assert 'RuntimeError: handler bug' in capsys.readouterr().err
+    finally:
+        server.server_close()
+
+
+def test_review_behavior_builds_one_http_client_with_the_plane_context(tmp_path, monkeypatch):
+    import teamlab.behavior
+    import teamlab.cli
+    context = object()
+    clients = []
+
+    class Budget:
+        def client(self, verify=None):
+            clients.append(verify)
+            return object()
+
+    class Plane:
+        model_token, model_base = 't', 'https://127.0.0.1:1/v1'
+
+        def __init__(self, directory):
+            pass
+
+        def preflight(self):
+            pass
+
+        def client_ssl_context(self):
+            return context
+
+    class Stop(Exception):
+        pass
+
+    def reviewer(client):
+        raise Stop
+
+    monkeypatch.setattr(teamlab.cli, 'spend_budget', lambda args: Budget())
+    monkeypatch.setattr(teamlab.plane, 'PlaneClient', Plane)
+    monkeypatch.setattr(teamlab.plane, 'separate_runtime_credentials', lambda: None)
+    monkeypatch.setattr(teamlab.behavior, 'BehaviorReviewer', reviewer)
+    monkeypatch.setattr('openai.OpenAI', lambda **kwargs: kwargs)
+    teamlab.cli.main(['review-behavior', '--root', str(tmp_path), '--run', 'x', '--output', str(tmp_path / 'o.json'),
+                      '--control-plane', str(tmp_path)])
+    assert clients == [context]
