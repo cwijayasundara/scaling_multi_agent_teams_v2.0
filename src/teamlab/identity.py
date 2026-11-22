@@ -103,10 +103,11 @@ def verify_journal_signatures(journal_path: Path, store) -> int:
                 raise SecurityError("unsigned audit record")
             with store.connect() as db:
                 row = db.execute("SELECT run_id,agent_id,public_key FROM agent_keys WHERE key_id=?", (key_id,)).fetchone()
-            consistent = all(record.get(k) == envelope.get(k) for k in ("operation_id", "run_id", "agent_id", "action", "args_hash", "epoch"))
-            if (row is None or not consistent or row["run_id"] != envelope.get("run_id")
-                    or row["agent_id"] != envelope.get("agent_id")
-                    or not verify_signature(row["public_key"], envelope, signature)):
-                raise SecurityError("audit signature verification failed")
+            if row is None or row["run_id"] != envelope.get("run_id") or row["agent_id"] != envelope.get("agent_id"):
+                raise SecurityError("audit signature verification failed: key not registered to this agent")
+            if any(record.get(k) != envelope.get(k) for k in ("operation_id", "run_id", "agent_id", "action", "args_hash", "epoch")):
+                raise SecurityError("audit signature verification failed: record differs from signed request")
+            if not verify_signature(row["public_key"], envelope, signature):
+                raise SecurityError("audit signature verification failed: bad signature")
             count += 1
     return count

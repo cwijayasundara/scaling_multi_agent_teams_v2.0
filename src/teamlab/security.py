@@ -17,6 +17,9 @@ from .identity import Credential, new_credential, verify_signature
 from .store import Store
 
 
+CREDENTIAL_TTL_SECONDS = 300
+
+
 class SecurityError(RuntimeError):
     pass
 
@@ -212,7 +215,7 @@ class Gateway:
             raise SecurityError("unknown role")
         run = self.store.run(self.run_id)
         token = secrets.token_urlsafe(32)
-        cred = new_credential(agent_id, token, time.time() + 300)
+        cred = new_credential(agent_id, token, time.time() + CREDENTIAL_TTL_SECONDS)
         with self.store.transaction() as db:
             db.execute("INSERT INTO agent_keys(key_id,run_id,agent_id,role,public_key,created) VALUES (?,?,?,?,?,?)", (
                 cred.key_id, self.run_id, agent_id, role, cred.public_key_b64(), time.time()))
@@ -230,7 +233,7 @@ class Gateway:
         except KeyError as exc:
             raise SecurityError("invalid service identity") from exc
 
-    def active(self, token: str):
+    def active(self, token: Credential):
         who = self.identity(token)
         run = self.store.run(who.run_id)
         if run["state"] != "RUNNING" or run["epoch"] != who.epoch:
@@ -240,14 +243,14 @@ class Gateway:
             raise RunStopped("run deadline exceeded")
         return who
 
-    def require(self, token: str, action: str):
+    def require(self, token: Credential, action: str):
         who = self.active(token)
         if action not in CAPABILITIES[who.role]:
             self.store.stop(who.run_id, f"capability violation: {who.agent_id}/{action}")
             raise SecurityError("action denied; entire team stopped")
         return who
 
-    def reserve_inference(self, token: str, purpose: str):
+    def reserve_inference(self, token: Credential, purpose: str):
         who = self.active(token)
         with self.store.transaction() as db:
             run = self.store.lock_run(db, who.run_id)
@@ -271,14 +274,14 @@ class Gateway:
             self.store.event(db, who.run_id, who.agent_id, 'monitor.completed', {
                 'monitor': monitor, 'model': getattr(response, 'model', None), 'usage': payload, 'elapsed_seconds': elapsed})
 
-    def record_inference(self, token: str, result, elapsed=None):
+    def record_inference(self, token: Credential, result, elapsed=None):
         who = self.active(token)  # A late response never authorizes more work.
         messages = getattr(result, "result", [])
         usage = [getattr(m, "usage_metadata", None) for m in messages]
         with self.store.transaction() as db:
             self.store.event(db, who.run_id, who.agent_id, "inference.completed", {"usage": usage, "elapsed_seconds": elapsed, "models": [getattr(m, "response_metadata", {}).get("model_name") for m in messages]})
 
-    def call(self, token: str, action: str, args: dict, handler):
+    def call(self, token: Credential, action: str, args: dict, handler):
         who = self.require(token, action)
         # Caller data can never override these authoritative identity fields.
         if set(args) & {"agent_id", "run_id", "role", "epoch", "token"}:

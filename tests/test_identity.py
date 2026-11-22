@@ -31,11 +31,11 @@ def test_audit_records_are_signed_and_verify(controller):
     assert n == controller.gateway.journal.verify() > 20
 
 
-def test_forged_audit_signature_is_detected(controller):
+def _rewrite(controller, mutate):
     controller.run_scripted()
     path = controller.store.root / 'audit.jsonl'
     lines = [json.loads(line) for line in path.read_text().splitlines()]
-    lines[2]['record']['request']['agent_id'] = 'worker-9'
+    mutate(lines[2]['record'])
     previous = '0' * 64
     for item in lines:
         item['previous'] = previous
@@ -43,8 +43,33 @@ def test_forged_audit_signature_is_detected(controller):
         item['hash'] = digest(item)
         previous = item['hash']
     path.write_text(''.join(json.dumps(item, sort_keys=True, separators=(',', ':')) + '\n' for item in lines))
-    assert controller.gateway.journal.verify() == len(lines)
-    with pytest.raises(SecurityError, match='signature'):
+    assert controller.gateway.journal.verify() == len(lines)  # chain still valid
+    return path
+
+
+def test_tampered_signed_envelope_fails_cryptographic_check(controller):
+    # Only request.issued_at changes: every consistency check passes, so the
+    # Ed25519 verification itself is what must reject the record.
+    path = _rewrite(controller, lambda r: r['request'].__setitem__('issued_at', r['request']['issued_at'] + 1))
+    with pytest.raises(SecurityError, match='bad signature'):
+        verify_journal_signatures(path, controller.store)
+
+
+def test_signature_check_is_what_rejects_tampering(controller, monkeypatch):
+    path = _rewrite(controller, lambda r: r['request'].__setitem__('issued_at', r['request']['issued_at'] + 1))
+    monkeypatch.setattr('teamlab.identity.verify_signature', lambda *a: True)
+    assert verify_journal_signatures(path, controller.store) > 20
+
+
+def test_record_differing_from_signed_request_is_detected(controller):
+    path = _rewrite(controller, lambda r: r.__setitem__('action', 'publish'))
+    with pytest.raises(SecurityError, match='differs from signed request'):
+        verify_journal_signatures(path, controller.store)
+
+
+def test_request_attributed_to_another_agent_is_detected(controller):
+    path = _rewrite(controller, lambda r: r['request'].__setitem__('agent_id', 'worker-9'))
+    with pytest.raises(SecurityError, match='not registered to this agent'):
         verify_journal_signatures(path, controller.store)
 
 
