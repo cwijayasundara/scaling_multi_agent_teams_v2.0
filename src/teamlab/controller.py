@@ -11,6 +11,7 @@ from .analytics import analyze, canonical, combine, digest
 from .fixture import read_records, shard_for
 from .security import CREDENTIAL_TTL_SECONDS, Gateway, RunStopped, SecurityError
 from .store import Store
+from .tracing import span, trace_tree
 
 
 class Controller:
@@ -220,6 +221,7 @@ class Controller:
         with self.store.connect() as db:
             keys = [dict(r) for r in db.execute('SELECT agent_id,role,key_id,public_key FROM agent_keys WHERE run_id=? ORDER BY created,agent_id', (self.run_id,))]
         (out / "agents.json").write_text(canonical(keys) + "\n")
+        (out / "trace.json").write_text(canonical(trace_tree(self.store, self.run_id)) + "\n")
         from . import dlp
         summaries, redacted_files, summary_hits = {}, [], []
         for name, text in self.model_summaries.items():
@@ -260,15 +262,22 @@ class Controller:
         return result
 
     def run_scripted(self):
-        self.note(self.lead, "Analyze all shards using published rules, verify independently, then publish.", plan=True)
-        for shard in range(self.workers):
-            self.authorize_delegation(self.lead, shard)
-        with ThreadPoolExecutor(max_workers=self.workers) as pool:
-            list(pool.map(self.scripted_worker, range(self.workers)))
-        self.authorize_verification(self.lead)
-        verdict = self.verify(self.verifier)
-        if not verdict["passed"]:
-            self.store.stop(self.run_id, "reference grader rejected candidate", "FAILED")
-            raise SecurityError("reference grader rejected candidate")
-        self.publish(self.lead)
+        with span(self.store, self.run_id, "run", "controller", parent=None) as root:
+            def worker_turn(shard):
+                # Pool threads do not inherit the context: parent explicitly.
+                with span(self.store, self.run_id, "worker-turn", f"worker-{shard}", parent=root):
+                    return self.scripted_worker(shard)
+
+            self.note(self.lead, "Analyze all shards using published rules, verify independently, then publish.", plan=True)
+            for shard in range(self.workers):
+                self.authorize_delegation(self.lead, shard)
+            with ThreadPoolExecutor(max_workers=self.workers) as pool:
+                list(pool.map(worker_turn, range(self.workers)))
+            self.authorize_verification(self.lead)
+            verdict = self.verify(self.verifier)
+            if not verdict["passed"]:
+                self.store.stop(self.run_id, "reference grader rejected candidate", "FAILED")
+                raise SecurityError("reference grader rejected candidate")
+            self.publish(self.lead)
+        # Export after the run span ends so the bundle's trace is complete.
         return self.export(self.candidate())

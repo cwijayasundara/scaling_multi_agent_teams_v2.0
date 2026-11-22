@@ -8,6 +8,7 @@ from .agents import AgentTeam, ReplayModel
 from .board import Board
 from .artifacts import Artifacts
 from .security import RunStopped
+from .tracing import span
 
 
 class BoardReplay(ReplayModel):
@@ -161,7 +162,13 @@ class CollaborativeTeam(AgentTeam):
         return self.graph('verifier', token, self.shared(token)+[verify_task],
             'List tasks and verify every SUBMITTED task. Report actual verdicts, then return. Do not invent success.')
 
-    def turn(self, graph, token, message):
+    def turn(self, graph, token, message, parent):
+        actor = self.controller.gateway.identity(token).agent_id
+        # Pool-submitted turns do not inherit the context: parent is explicit.
+        with span(self.controller.store, self.controller.run_id, 'turn', actor, parent=parent):
+            return self._turn(graph, token, message)
+
+    def _turn(self, graph, token, message):
         result = graph.invoke({'messages': [{'role': 'user', 'content': message}]}, config={'recursion_limit': 80, 'configurable': {'thread_id': self.controller.gateway.identity(token).agent_id+'-'+str(self.round_number)}})
         self.controller.model_summaries[self.controller.gateway.identity(token).agent_id] = self.summary(result)
         return result
@@ -169,27 +176,32 @@ class CollaborativeTeam(AgentTeam):
     def run(self):
         c = self.controller
         try:
-            for round_number in range(32):
-                self.round_number = round_number
-                self.turn(self.lead, c.lead, 'Plan or reprioritize work; publish if the report root is complete.')
-                if c.store.run(c.run_id)['state'] == 'COMPLETED':
-                    with c.store.connect() as db:
-                        root = db.execute('SELECT result FROM work WHERE run_id=? AND parent IS NULL', (c.run_id,)).fetchone()
-                    return c.export(json.loads(root['result']))
-                with ThreadPoolExecutor(max_workers=c.workers) as pool:
-                    futures = [pool.submit(self.turn, self.workers[i], token, 'Work on one eligible task from the board.') for i, token in c.worker_tokens.items()]
-                    for future in futures:
-                        future.result()
-                self.turn(self.verifier, c.verifier, 'Independently check submitted work.')
-                for task in self.board.list(c.lead):
-                    if task['state'] == 'VERIFIED':
-                        if self.authored:
-                            self.artifacts.integrate(c.lead, task['id'])
-                        else:
-                            self.board.integrate(c.lead, task['id'])
-                from .recovery import Checkpoints
-                Checkpoints(self.board).save('round-'+str(round_number))
-            raise RunStopped('scheduler round budget exceeded')
+            with span(c.store, c.run_id, 'run', 'controller', parent=None):
+                for round_number in range(32):
+                    with span(c.store, c.run_id, f'round-{round_number}', 'controller') as round_span:
+                        self.round_number = round_number
+                        self.turn(self.lead, c.lead, 'Plan or reprioritize work; publish if the report root is complete.', round_span)
+                        if c.store.run(c.run_id)['state'] == 'COMPLETED':
+                            break
+                        with ThreadPoolExecutor(max_workers=c.workers) as pool:
+                            futures = [pool.submit(self.turn, self.workers[i], token, 'Work on one eligible task from the board.', round_span) for i, token in c.worker_tokens.items()]
+                            for future in futures:
+                                future.result()
+                        self.turn(self.verifier, c.verifier, 'Independently check submitted work.', round_span)
+                        for task in self.board.list(c.lead):
+                            if task['state'] == 'VERIFIED':
+                                if self.authored:
+                                    self.artifacts.integrate(c.lead, task['id'])
+                                else:
+                                    self.board.integrate(c.lead, task['id'])
+                        from .recovery import Checkpoints
+                        Checkpoints(self.board).save('round-'+str(round_number))
+                else:
+                    raise RunStopped('scheduler round budget exceeded')
+            # Export after the run span ends so the bundle's trace is complete.
+            with c.store.connect() as db:
+                root = db.execute('SELECT result FROM work WHERE run_id=? AND parent IS NULL', (c.run_id,)).fetchone()
+            return c.export(json.loads(root['result']))
         except BaseException:
             c.store.stop(c.run_id, 'collaboration interrupted or failed', 'PAUSED')
             c.export()

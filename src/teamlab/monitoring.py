@@ -64,6 +64,9 @@ def server_for(store: Store, token: str, port=8765):
                         payload = (snapshot if parts[2] == "snapshot" else review)(store, run_id)
                     elif parts[2] == "triage":
                         payload = {"dispositions": store.triage_dispositions(run_id)}
+                    elif parts[2] == "trace":
+                        from .tracing import trace_tree
+                        payload = trace_tree(store, run_id)
                     elif parts[2] == "events":
                         after = int(parse_qs(parsed.query).get("after", ["0"])[0])
                         self.send_response(200)

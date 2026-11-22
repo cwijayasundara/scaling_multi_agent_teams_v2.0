@@ -16,6 +16,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_openai import ChatOpenAI
 
 from .security import CAPABILITIES, RunStopped, SecurityError
+from .tracing import last_operation_id, span
 
 
 SCOPE = """You work only on the supplied synthetic retail dataset. Use the published
@@ -226,11 +227,14 @@ class AgentTeam:
         def delegate(shard: int) -> dict:
             """Delegate one existing shard to its authenticated worker; wait for its result."""
             c.authorize_delegation(c.lead, shard)
+            # Read in this same tool call: the framework may run tools in a copied context.
+            cause = last_operation_id()
             token = c.worker_tokens[shard]
             c.gateway.active(token)
             self.record_message(c.lead, f"worker-{shard}", f"Analyze assigned shard {shard}.")
-            result = self.workers[shard].invoke({"messages": [{"role": "user", "content": f"Analyze assigned shard {shard}."}]},
-                config={"recursion_limit": 30})
+            with span(c.store, c.run_id, "delegated-turn", f"worker-{shard}", parent=cause):
+                result = self.workers[shard].invoke({"messages": [{"role": "user", "content": f"Analyze assigned shard {shard}."}]},
+                    config={"recursion_limit": 30})
             c.gateway.active(c.lead)
             c.model_summaries[f"worker-{shard}"] = self.summary(result)
             task = c.store.tasks(c.run_id)[shard]
@@ -246,9 +250,11 @@ class AgentTeam:
         def request_verification() -> dict:
             """Delegate independent checking to the verifier after every shard is submitted."""
             c.authorize_verification(c.lead)
+            cause = last_operation_id()
             self.record_message(c.lead, "verifier", "Independently verify all submissions.")
-            result = self.verifier.invoke({"messages": [{"role": "user", "content": "Independently verify all submissions."}]},
-                config={"recursion_limit": 15})
+            with span(c.store, c.run_id, "verifier-turn", "verifier", parent=cause):
+                result = self.verifier.invoke({"messages": [{"role": "user", "content": "Independently verify all submissions."}]},
+                    config={"recursion_limit": 15})
             c.model_summaries["verifier"] = self.summary(result)
             with c.store.connect() as db:
                 row = db.execute("SELECT verdict FROM verification WHERE run_id=?", (c.run_id,)).fetchone()
@@ -268,9 +274,10 @@ class AgentTeam:
 
     def run(self):
         try:
-            result = self.lead.invoke({"messages": [{"role": "user", "content":
-                "Find the highest-net-sales region, totals and exclusions for the fixed synthetic dataset. Complete and publish the verified report."}]},
-                config={"recursion_limit": 50})
+            with span(self.controller.store, self.controller.run_id, "run", "controller", parent=None):
+                result = self.lead.invoke({"messages": [{"role": "user", "content":
+                    "Find the highest-net-sales region, totals and exclusions for the fixed synthetic dataset. Complete and publish the verified report."}]},
+                    config={"recursion_limit": 50})
             self.controller.model_summaries["coordinator"] = self.summary(result)
             if self.controller.store.run(self.controller.run_id)["state"] != "COMPLETED":
                 self.controller.store.stop(self.controller.run_id, "coordinator ended without a verified publication", "PAUSED")

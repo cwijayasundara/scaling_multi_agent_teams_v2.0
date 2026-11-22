@@ -227,6 +227,10 @@ def parser():
     triage.add_argument("--root", required=True)
     triage.add_argument("--run-id", required=True)
     triage.add_argument("--model", action="store_true", help="Use the tool-free Luna triager; requires OPENAI_API_KEY and a spend budget")
+    trace = sub.add_parser("trace", help="Print a run's request trace, or one span's chain to its root")
+    trace.add_argument("--root", required=True)
+    trace.add_argument("--run-id", required=True)
+    trace.add_argument("--span", help="Span or operation id; prints its path to the root, nearest first")
     bench = sub.add_parser("benchmark")
     bench.add_argument("--root", default="runs/benchmark")
     bench.add_argument("--output", default="reports/offline-benchmark.json")
@@ -350,6 +354,15 @@ def main(argv=None):
                 triager = RuleTriage()
             created = triage_run(store, args.run_id, triager)
             print(json.dumps({'triaged_alerts': len(created), 'dispositions': created}, indent=2))
+            return 0
+        if args.command == 'trace':
+            from .tracing import chain, trace_tree
+            if not Path(args.root).is_dir():
+                raise ValueError(f"run root not found: {args.root}")
+            store = Store(Path(args.root), database_url=os.environ.get('TEAMLAB_DATABASE_URL'))
+            store.run(args.run_id)
+            result = chain(store, args.run_id, args.span) if args.span else trace_tree(store, args.run_id)
+            print(json.dumps(result, indent=2))
             return 0
         if args.command in ("run", "restart"):
             if args.command == "restart":

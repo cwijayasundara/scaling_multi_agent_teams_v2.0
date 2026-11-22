@@ -13,7 +13,7 @@ from threading import Thread
 from queue import Queue, Empty
 
 from .analytics import canonical, digest
-from . import dlp
+from . import dlp, tracing
 from .identity import Credential, new_credential, verify_signature
 from .store import Store
 
@@ -365,8 +365,10 @@ class Gateway:
             self.store.stop(who.run_id, "oversized action", "PAUSED")
             raise SecurityError("oversized action")
         operation_id = secrets.token_hex(16)
+        parent_id = tracing.current_span()
         envelope = {"operation_id": operation_id, "run_id": who.run_id, "agent_id": who.agent_id,
-            "action": action, "args_hash": digest(args), "epoch": who.epoch, "issued_at": time.time()}
+            "action": action, "args_hash": digest(args), "epoch": who.epoch, "issued_at": time.time(),
+            "parent_id": parent_id}
         signature = token.sign(envelope)
         registered = self._public_keys.get(token.key_id)
         if registered is None or registered[0] != who.run_id or not verify_signature(registered[1], envelope, signature):
@@ -415,6 +417,7 @@ class Gateway:
                 "action": action, "args_hash": digest(args), "epoch": who.epoch,
                 "request": envelope, "key_id": token.key_id, "signature": signature,
                 "verdicts": verdicts, "time": time.time(), "policy_version": "role-scope-board-v2",
+                "trace": {"trace_id": who.run_id, "span_id": operation_id, "parent_id": parent_id},
                 "arguments_summary": {key: value for key, value in args.items() if key in ("text", "shard", "fence", "result_hash", "candidate_hash", "task_id", "source_hash", "title", "partitions")}}
             self.journal.append(record)  # Refuse dispatch if the audit sink is unavailable.
             if self.archive:
@@ -443,10 +446,12 @@ class Gateway:
                 exhausted = False
                 db.execute("UPDATE runs SET calls=calls+1 WHERE id=?", (who.run_id,))
                 self.store.event(db, who.run_id, who.agent_id, "action.authorized", record)
-                result = handler(db, who)
+                with tracing.active(operation_id):
+                    result = handler(db, who)
                 self.store.event(db, who.run_id, who.agent_id, "action.committed", {
                     "operation_id": operation_id, "action": action, "result_hash": digest(result),
                 })
         if exhausted:
             raise RunStopped("action budget exhausted")
+        tracing.committed(operation_id)
         return result

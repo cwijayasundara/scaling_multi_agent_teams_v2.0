@@ -107,6 +107,10 @@ def verify_journal_signatures(journal_path: Path, store) -> int:
                 raise SecurityError("audit signature verification failed: key not registered to this agent")
             if any(record.get(k) != envelope.get(k) for k in ("operation_id", "run_id", "agent_id", "action", "args_hash", "epoch")):
                 raise SecurityError("audit signature verification failed: record differs from signed request")
+            # Records from before request tracing carry neither field.
+            if ("parent_id" in envelope or "trace" in record) and (
+                    not isinstance(record.get("trace"), dict) or record["trace"].get("parent_id") != envelope.get("parent_id")):
+                raise SecurityError("audit signature verification failed: record differs from signed request")
             if not verify_signature(row["public_key"], envelope, signature):
                 raise SecurityError("audit signature verification failed: bad signature")
             count += 1
