@@ -21,7 +21,7 @@ teamlab = "teamlab.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-teamlab = ["behavior_profiles.json", "sandbox_policy.yaml", "config_signers.json", "*.sig"]
+teamlab = ["behavior_profiles.json", "sandbox_policy.yaml", "access_policy.json", "config_signers.json", "*.sig"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

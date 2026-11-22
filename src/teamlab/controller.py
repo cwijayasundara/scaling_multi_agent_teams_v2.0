@@ -7,6 +7,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from .access import load_access_policy
 from .analytics import analyze, canonical, combine, digest
 from .config_signing import verify_all
 from .fixture import read_records, shard_for
@@ -39,6 +40,8 @@ class Controller:
         config_signers = verify_all()
         profiles = load_profiles()
         config_signers["behavior_profiles.json"] = profiles.signer
+        access_policy = load_access_policy()
+        config_signers["access_policy.json"] = access_policy.signer
         with self.store.transaction() as db:
             db.execute("INSERT INTO runs(id,state,epoch,input_hash,workers,mode,created,deadline) VALUES (?,'RUNNING',1,?,?,?,?,?)", (
                 self.run_id, self.input_hash, workers, mode, time.time(), time.time() + 1200,
@@ -51,9 +54,11 @@ class Controller:
                 "execution_profile": "trusted-tools-only; no model-written code or host shell",
                 "provider_key_source": provider_key_source,
                 "behavior_profile": {"version": profiles.version, "sha256": profiles.sha256},
+                "access_policy": {"version": access_policy.version, "sha256": access_policy.sha256, "signer": access_policy.signer},
                 "config_signers": config_signers,
             })
-        self.gateway = Gateway(self.store, self.run_id, monitors=monitors, credential_ttl=credential_ttl, profiles=profiles)
+        self.gateway = Gateway(self.store, self.run_id, monitors=monitors, credential_ttl=credential_ttl, profiles=profiles,
+                               access_policy=access_policy)
         self.lead = self.gateway.issue("coordinator", "coordinator")
         self.verifier = self.gateway.issue("verifier", "verifier")
         self.worker_tokens = {i: self.gateway.issue(f"worker-{i}", "worker", i) for i in range(workers)}

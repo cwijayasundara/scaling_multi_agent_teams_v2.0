@@ -20,7 +20,7 @@ from .analytics import canonical
 from .identity import _b64, _unb64, key_id_for, verify_signature
 
 PACKAGE_DIR = Path(__file__).parent
-SIGNED_CONFIGS = ("behavior_profiles.json", "sandbox_policy.yaml")
+SIGNED_CONFIGS = ("behavior_profiles.json", "sandbox_policy.yaml", "access_policy.json")
 SIGNERS_ENV = "TEAMLAB_CONFIG_SIGNERS"
 PACKAGED_SIGNERS = PACKAGE_DIR / "config_signers.json"
 

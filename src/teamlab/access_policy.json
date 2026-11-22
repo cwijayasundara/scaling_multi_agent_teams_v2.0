@@ -1,0 +1,16 @@
+{"version": "access-v1",
+ "sensitivity": {
+   "list_tasks": "board-read", "read_notes": "board-read", "get_progress": "board-read",
+   "post_note": "board-write", "record_plan": "board-write", "create_task": "board-write", "split_task": "board-write",
+   "reprioritize_task": "board-write", "report_blocker": "board-write", "delegate": "board-write", "request_verification": "board-write",
+   "claim_task": "row-data", "claim_work": "row-data", "inspect_shard": "row-data", "inspect_work": "row-data",
+   "calculate_shard": "row-data", "calculate_work": "row-data", "submit_result": "row-data", "submit_task": "row-data",
+   "write_artifact": "execution", "run_artifact": "execution", "record_execution": "execution",
+   "verify_candidates": "verification", "verify_task": "verification", "verify_artifact": "verification", "record_verification": "verification",
+   "integrate_task": "publication", "integrate_artifact": "publication", "publish": "publication", "publish_work": "publication"},
+ "allowed_by_state": {
+   "ACTIVE": ["board-read", "board-write", "row-data", "execution", "verification", "publication"],
+   "RESTRICTED": ["board-read"],
+   "QUARANTINED": []},
+ "containment": {"restrict_at_strikes": 1, "quarantine_at_strikes": 2,
+   "strikes": {"behavior-profile-v1": 1, "credential.rejected": 2, "access-policy-v1": 1}}}

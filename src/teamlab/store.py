@@ -42,12 +42,18 @@ CREATE TABLE IF NOT EXISTS triage_dispositions (
  run_id TEXT NOT NULL, alert_seq INTEGER NOT NULL, payload TEXT NOT NULL,
  PRIMARY KEY(run_id, alert_seq)
 );
+CREATE TABLE IF NOT EXISTS agent_states (
+ run_id TEXT NOT NULL, agent_id TEXT NOT NULL, state TEXT NOT NULL, strikes INTEGER NOT NULL,
+ reason TEXT NOT NULL, updated REAL NOT NULL, PRIMARY KEY(run_id, agent_id)
+);
 CREATE TABLE IF NOT EXISTS alert_acks (
  run_id TEXT NOT NULL, alert_seq INTEGER NOT NULL, acknowledged_at REAL NOT NULL,
  acknowledged_by TEXT NOT NULL, note TEXT NOT NULL,
  PRIMARY KEY(run_id, alert_seq)
 );
 """
+
+AGENT_STATES = ("ACTIVE", "RESTRICTED", "QUARANTINED")
 
 
 class Store:
@@ -94,6 +100,29 @@ class Store:
         db.execute("INSERT INTO events(run_id,agent_id,kind,detail,created) VALUES (?,?,?,?,?)", (
             run_id, agent_id, kind, json.dumps(detail, sort_keys=True, allow_nan=False), time.time(),
         ))
+
+    @staticmethod
+    def agent_state(db, run_id: str, agent_id: str) -> dict:
+        """An agent's containment state inside the caller's transaction; no row means ACTIVE."""
+        row = db.execute("SELECT state,strikes FROM agent_states WHERE run_id=? AND agent_id=?", (run_id, agent_id)).fetchone()
+        return {"state": row["state"], "strikes": row["strikes"]} if row else {"state": "ACTIVE", "strikes": 0}
+
+    @staticmethod
+    def set_agent_state(db, run_id: str, agent_id: str, state: str, strikes: int, reason: str):
+        """Upsert an agent's containment state inside the caller's transaction."""
+        if state not in AGENT_STATES:
+            raise ValueError("unknown agent state")
+        current = Store.agent_state(db, run_id, agent_id)
+        now = time.time()
+        if db.execute("SELECT 1 FROM agent_states WHERE run_id=? AND agent_id=?", (run_id, agent_id)).fetchone():
+            db.execute("UPDATE agent_states SET state=?,strikes=?,reason=?,updated=? WHERE run_id=? AND agent_id=?",
+                       (state, strikes, reason[:1000], now, run_id, agent_id))
+        else:
+            db.execute("INSERT INTO agent_states(run_id,agent_id,state,strikes,reason,updated) VALUES (?,?,?,?,?,?)",
+                       (run_id, agent_id, state, strikes, reason[:1000], now))
+        if current["state"] != state:
+            Store.event(db, run_id, "controller", "agent.state_changed", {
+                "agent_id": agent_id, "from": current["state"], "to": state, "strikes": strikes, "reason": reason[:1000]})
 
     def lock_run(self, db, run_id):
         suffix = ' FOR UPDATE' if self.database_url else ''

@@ -14,6 +14,7 @@ from queue import Queue, Empty
 
 from .analytics import canonical, digest
 from . import dlp, tracing
+from .access import ACCESS_MONITOR, AccessPolicy, load_access_policy
 from .identity import Credential, new_credential, verify_signature
 from .profiles import PROFILE_MONITOR, Profiles, load_profiles
 from .store import Store
@@ -36,6 +37,10 @@ class MonitorUnavailable(SecurityError):
 
 class CredentialExpired(SecurityError):
     pass
+
+
+class AccessDenied(SecurityError):
+    """The access policy refused this action; the run keeps going."""
 
 
 @dataclass(frozen=True)
@@ -211,10 +216,12 @@ class Gateway:
     output_filter_name = "output-filter-v1"
 
     def __init__(self, store: Store, run_id: str, monitors=None, monitor_timeout=10,
-                 credential_ttl=CREDENTIAL_TTL_SECONDS, refresh_margin=60, profiles: Profiles | None = None):
+                 credential_ttl=CREDENTIAL_TTL_SECONDS, refresh_margin=60, profiles: Profiles | None = None,
+                 access_policy: AccessPolicy | None = None):
         self.store, self.run_id = store, run_id
         # Gateway code, not a monitor: replacing self.monitors cannot remove it.
         self.profiles = profiles if profiles is not None else load_profiles()
+        self.access = access_policy if access_policy is not None else load_access_policy()
         self.monitors = monitors if monitors is not None else [RuleMonitor()]
         if not self.monitors:
             raise SecurityError("at least one monitor is required")
@@ -378,6 +385,15 @@ class Gateway:
         if registered is None or registered[0] != who.run_id or not verify_signature(registered[1], envelope, signature):
             self.store.stop(who.run_id, f"request signature invalid: {who.agent_id}/{action}")
             raise SecurityError("request signature invalid; entire team stopped")
+        attributes = self.access.attributes(self.store, who, action)
+        allowed, rule = self.access.decide(attributes)
+        if not allowed:
+            verdict = {"monitor": ACCESS_MONITOR, "verdict": "DENY", "rule": rule, "attributes": attributes}
+            with self.store.transaction() as db:
+                self.store.event(db, who.run_id, who.agent_id, "action.denied", {
+                    "operation_id": operation_id, "action": action, "args_hash": digest(args),
+                    "verdicts": [verdict], "trace": trace})
+            raise AccessDenied(f"{ACCESS_MONITOR}: DENY on {who.agent_id}/{action} ({rule})")
         # Gateway code, not a monitor: replacing self.monitors cannot remove it.
         hits = [h for h in dlp.scan_args(args) if h["kind"] in dlp.SECRET_KINDS]
         if hits:
@@ -456,6 +472,10 @@ class Gateway:
                 run = self.store.lock_run(db, who.run_id)
                 if run["state"] != "RUNNING" or run["epoch"] != who.epoch or time.time() >= run["deadline"]:
                     raise RunStopped("dispatch permit revoked")
+                # Containment may have changed while the monitors ran.
+                contained = self.store.agent_state(db, who.run_id, who.agent_id)["state"]
+                if not self.access.decide({**attributes, "agent_state": contained})[0]:
+                    raise AccessDenied("agent containment changed")
                 limits = db.execute('SELECT * FROM run_limits WHERE run_id=?', (who.run_id,)).fetchone()
                 if run["calls"] >= (limits['tool_calls'] if limits else 400):
                     # Raise after committing the paused state, below.
