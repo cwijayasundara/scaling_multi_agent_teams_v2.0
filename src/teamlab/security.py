@@ -9,7 +9,7 @@ import secrets
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Thread
+from threading import Lock, Thread
 from queue import Queue, Empty
 
 from .analytics import canonical, digest
@@ -219,6 +219,7 @@ def bounded_monitor(monitor, identity, action, args, context, timeout: float, tr
 
 class Gateway:
     output_filter_name = "output-filter-v1"
+    quarantine_log_window = 60  # seconds: at most one refusal record per (agent, action) per window
 
     def __init__(self, store: Store, run_id: str, monitors=None, monitor_timeout=10,
                  credential_ttl=CREDENTIAL_TTL_SECONDS, refresh_margin=60, profiles: Profiles | None = None,
@@ -241,6 +242,9 @@ class Gateway:
         self._quarantined: set[str] = set()  # agent ids revoke_agent has quarantined; never shrinks
         self._public_keys: dict[str, tuple[str, str]] = {}
         self.archive = None
+        self._clock = time.monotonic
+        self._refusal_lock = Lock()
+        self._refusals: dict[tuple[str, str], list] = {}  # (agent, action) -> [window start, suppressed]
         for monitor in self.monitors:
             if isinstance(monitor, LunaMonitor):
                 monitor.usage_callback = self.record_monitor_usage
@@ -261,14 +265,38 @@ class Gateway:
         self._sessions[token] = _Session(Identity(self.run_id, agent_id, role, run["epoch"], shard), cred.key_id, expires_at)
         return cred
 
-    def _session(self, cred: Credential) -> _Session:
+    def _refuse_quarantined(self, run_id: str, agent_id: str, action: str | None, **detail):
+        """Record a quarantined agent's refused attempt in its own transaction, then raise."""
+        if action is not None:
+            self._record_refusal(run_id, agent_id, action, detail)
+        raise AgentQuarantined(f"agent quarantined: {agent_id}")
+
+    def _record_refusal(self, run_id: str, agent_id: str, action: str, extra: dict) -> None:
+        now, key = self._clock(), (agent_id, action)
+        with self._refusal_lock:
+            window = self._refusals.get(key)
+            if window is not None and now - window[0] < self.quarantine_log_window:
+                window[1] += 1
+                return
+            suppressed = window[1] if window is not None else 0
+            self._refusals[key] = [now, 0]
+        detail = {"action": action, **extra,
+                  "verdicts": [{"monitor": ACCESS_MONITOR, "verdict": "DENY", "rule": "agent-quarantined"}],
+                  "agent_state": "QUARANTINED"}
+        if suppressed:
+            detail["suppressed"] = suppressed
+        with self.store.transaction() as db:
+            self.store.event(db, run_id, agent_id, "action.denied", detail)
+
+    def _session(self, cred: Credential, action: str | None = None) -> _Session:
+        """action names the attempt to record if it is refused for quarantine; None records nothing."""
         session = self._sessions.get(cred.token) if isinstance(cred, Credential) else None
         if session is None:
             if isinstance(cred, Credential) and cred.token in self._revoked:
-                raise AgentQuarantined(f"agent quarantined: {self._revoked[cred.token]}")
+                self._refuse_quarantined(self.run_id, self._revoked[cred.token], action)
             raise SecurityError("invalid service identity")
         if session.identity.agent_id in self._quarantined:
-            raise AgentQuarantined(f"agent quarantined: {session.identity.agent_id}")
+            self._refuse_quarantined(session.identity.run_id, session.identity.agent_id, action)
         return session
 
     def revoke_agent(self, agent_id: str) -> None:
@@ -280,9 +308,9 @@ class Gateway:
                 self._revoked[token] = agent_id
                 self._sessions.pop(token, None)
 
-    def identity(self, cred: Credential) -> Identity:
+    def identity(self, cred: Credential, action: str = "identity") -> Identity:
         try:
-            session = self._session(cred)
+            session = self._session(cred)  # records nothing: a refusal is re-checked under the lock
         except SecurityError:
             if not isinstance(cred, Credential):
                 raise
@@ -291,7 +319,7 @@ class Gateway:
             return session.identity
         with cred._lock:
             # Another thread holding this credential may have rotated it already.
-            session = self._session(cred)
+            session = self._session(cred, action)
             if session.expires_at - time.time() >= self.refresh_margin:
                 return session.identity
             try:
@@ -301,8 +329,8 @@ class Gateway:
                     raise
                 # Still valid: the request signature check in call() decides,
                 # unless the rejection quarantined the agent (AgentQuarantined).
-                return self._session(cred).identity
-            return self._session(cred).identity
+                return self._session(cred, action).identity
+            return self._session(cred, action).identity
 
     def refresh(self, cred: Credential) -> None:
         """Rotate the bearer token after the holder proves possession of its registered key."""
@@ -312,7 +340,7 @@ class Gateway:
             self._refresh_locked(cred)
 
     def _refresh_locked(self, cred: Credential) -> None:
-        session = self._session(cred)
+        session = self._session(cred, "credential.refresh")
         who = session.identity
         old_token = cred.token
         envelope = {"refresh": hashlib.sha256(old_token.encode()).hexdigest(), "run_id": who.run_id,
@@ -330,11 +358,8 @@ class Gateway:
         if run["state"] != "RUNNING" or run["epoch"] != who.epoch:
             raise RunStopped("credential refresh revoked")
         token, expires_at = secrets.token_urlsafe(32), time.time() + self.credential_ttl
-        with self.store.transaction() as db:
-            self.store.event(db, who.run_id, who.agent_id, "credential.refreshed", {
-                "agent_id": who.agent_id, "key_id": cred.key_id, "expires_at": expires_at})
         if who.agent_id in self._quarantined:
-            raise AgentQuarantined(f"agent quarantined: {who.agent_id}")
+            self._refuse_quarantined(who.run_id, who.agent_id, "credential.refresh")
         # Publish the new session before retiring the old one so no reader
         # holding either token ever misses.
         self._sessions[token] = _Session(who, session.key_id, expires_at)
@@ -342,20 +367,33 @@ class Gateway:
             # revoke_agent ran between the check above and the publish: withdraw it.
             self._revoked[token] = who.agent_id
             self._sessions.pop(token, None)
-            raise AgentQuarantined(f"agent quarantined: {who.agent_id}")
+            self._refuse_quarantined(who.run_id, who.agent_id, "credential.refresh")
+        # Record the rotation only once no quarantine check can refuse it.
+        try:
+            with self.store.transaction() as db:
+                self.store.event(db, who.run_id, who.agent_id, "credential.refreshed", {
+                    "agent_id": who.agent_id, "key_id": cred.key_id, "expires_at": expires_at})
+        except BaseException:
+            self._sessions.pop(token, None)
+            raise
         cred._rotate(token, expires_at)
         self._sessions.pop(old_token, None)
 
-    def _require_not_quarantined(self, db, who: Identity) -> None:
-        """The store's agent_states is the source of truth, shared by every gateway process."""
+    def _store_quarantined(self, db, who: Identity) -> bool:
+        """The store's agent_states is the source of truth, shared by every gateway process.
+
+        Returns rather than raises so the caller can leave its transaction before recording the refusal."""
         if self.store.agent_state(db, who.run_id, who.agent_id)["state"] == "QUARANTINED":
             self.revoke_agent(who.agent_id)
-            raise AgentQuarantined(f"agent quarantined: {who.agent_id}")
+            return True
+        return False
 
-    def active(self, token: Credential):
-        who = self.identity(token)
+    def active(self, token: Credential, action: str = "identity", **detail):
+        who = self.identity(token, action)
         with self.store.connect() as db:
-            self._require_not_quarantined(db, who)
+            quarantined = self._store_quarantined(db, who)
+        if quarantined:
+            self._refuse_quarantined(who.run_id, who.agent_id, action, **detail)
         run = self.store.run(who.run_id)
         if run["state"] != "RUNNING" or run["epoch"] != who.epoch:
             raise RunStopped("run is stopped, paused, completed or revoked")
@@ -365,29 +403,41 @@ class Gateway:
         return who
 
     def require(self, token: Credential, action: str):
-        who = self.active(token)
+        who = self.active(token, action)
         if action not in CAPABILITIES[who.role]:
             self.store.stop(who.run_id, f"capability violation: {who.agent_id}/{action}")
             raise SecurityError("action denied; entire team stopped")
         return who
 
-    def reserve_inference(self, token: Credential, purpose: str):
-        who = self.active(token)
+    def reserve_inference(self, token: Credential, purpose: str, operation: dict | None = None):
+        """operation: the calling action's operation_id and trace, recorded if quarantine refuses."""
+        detail = {"purpose": purpose, **(operation or {})}
+        who = self.active(token, "inference", **detail)
+        exhausted = quarantined = False
         with self.store.transaction() as db:
             run = self.store.lock_run(db, who.run_id)
             if run["state"] != "RUNNING" or run["epoch"] != who.epoch:
                 raise RunStopped("inference authorization revoked")
-            self._require_not_quarantined(db, who)
-            limits = db.execute('SELECT * FROM run_limits WHERE run_id=?', (who.run_id,)).fetchone()
-            exhausted = run["model_calls"] >= (limits['model_calls'] if limits else 100)
-            if exhausted:
-                db.execute("UPDATE runs SET state='PAUSED',epoch=epoch+1,reason='inference budget' WHERE id=?", (who.run_id,))
-                self.store.event(db, who.run_id, who.agent_id, "run.paused", {"reason": "inference budget"})
-            else:
-                db.execute("UPDATE runs SET model_calls=model_calls+1 WHERE id=?", (who.run_id,))
-                self.store.event(db, who.run_id, who.agent_id, "inference.requested", {"purpose": purpose, "model": "gpt-6-luna" if purpose != "sdk-replay" else "scripted-model-double"})
+            # A refusal writes nothing here; it is recorded on its own after this transaction.
+            quarantined = self._store_quarantined(db, who)
+            if not quarantined:
+                exhausted = self._spend_inference(db, who, run, purpose)
+        if quarantined:
+            self._refuse_quarantined(who.run_id, who.agent_id, "inference", **detail)
         if exhausted:
             raise RunStopped("inference budget exhausted")
+
+    def _spend_inference(self, db, who: Identity, run, purpose: str) -> bool:
+        """Count one model call, or pause the run when the budget is spent; returns whether it was."""
+        limits = db.execute('SELECT * FROM run_limits WHERE run_id=?', (who.run_id,)).fetchone()
+        exhausted = run["model_calls"] >= (limits['model_calls'] if limits else 100)
+        if exhausted:
+            db.execute("UPDATE runs SET state='PAUSED',epoch=epoch+1,reason='inference budget' WHERE id=?", (who.run_id,))
+            self.store.event(db, who.run_id, who.agent_id, "run.paused", {"reason": "inference budget"})
+        else:
+            db.execute("UPDATE runs SET model_calls=model_calls+1 WHERE id=?", (who.run_id,))
+            self.store.event(db, who.run_id, who.agent_id, "inference.requested", {"purpose": purpose, "model": "gpt-6-luna" if purpose != "sdk-replay" else "scripted-model-double"})
+        return exhausted
 
     def record_monitor_usage(self, who, monitor, response, elapsed):
         usage = getattr(response, 'usage', None)
@@ -397,7 +447,7 @@ class Gateway:
                 'monitor': monitor, 'model': getattr(response, 'model', None), 'usage': payload, 'elapsed_seconds': elapsed})
 
     def record_inference(self, token: Credential, result, elapsed=None):
-        who = self.active(token)  # A late response never authorizes more work.
+        who = self.active(token, "inference")  # A late response never authorizes more work.
         messages = getattr(result, "result", [])
         usage = [getattr(m, "usage_metadata", None) for m in messages]
         with self.store.transaction() as db:
@@ -468,7 +518,8 @@ class Gateway:
         try:
             for monitor in self.monitors:
                 if isinstance(monitor, LunaMonitor):
-                    self.reserve_inference(token, "security-monitor")
+                    self.reserve_inference(token, "security-monitor",
+                                           {"operation_id": operation_id, "trace": dict(trace)})
                 trusted_state = None
                 if isinstance(monitor, LunaMonitor):
                     task = next((t for t in self.store.tasks(who.run_id) if t["shard"] == who.shard), None)

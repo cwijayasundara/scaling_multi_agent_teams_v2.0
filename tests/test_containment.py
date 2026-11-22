@@ -262,6 +262,34 @@ def test_quarantine_during_refresh_cannot_be_undone(tmp_path, clock, monkeypatch
         c.gateway.reserve_inference(cred, "agent")
     assert c.store.run(c.run_id)["model_calls"] == before
     assert not kinds(c, "inference.requested")
+    assert not kinds(c, "credential.refreshed")  # the refused refresh committed no rotation record
+    assert "credential.refresh" in [e["detail"]["action"] for e in kinds(c, "action.denied")]
+
+
+def test_revocation_between_publish_and_recheck_withdraws_the_new_session(controller):
+    gateway, cred = controller.gateway, controller.worker_tokens[0]
+    old, published = cred.token, []
+
+    class RevokeOnPublish(dict):
+        def __setitem__(self, key, value):
+            super().__setitem__(key, value)
+            if key != old and not published:
+                published.append(key)
+                gateway.revoke_agent("worker-0")  # lands after the pre-publish check
+
+    gateway._sessions = RevokeOnPublish(gateway._sessions)
+    with pytest.raises(AgentQuarantined):
+        gateway.refresh(cred)
+    [new] = published
+    assert cred.token == old  # never rotated
+    assert new not in gateway._sessions and old not in gateway._sessions
+    assert gateway._revoked[new] == gateway._revoked[old] == "worker-0"
+    assert not kinds(controller, "credential.refreshed")
+    assert [e["detail"] for e in kinds(controller, "action.denied")] == [{"action": "credential.refresh",
+        "verdicts": [{"monitor": "access-policy-v1", "verdict": "DENY", "rule": "agent-quarantined"}],
+        "agent_state": "QUARANTINED"}]
+    with pytest.raises(AgentQuarantined):
+        gateway.identity(cred)
 
 
 def test_store_quarantine_is_authoritative_without_revocation(collab):

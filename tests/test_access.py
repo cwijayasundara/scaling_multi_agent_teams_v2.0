@@ -39,6 +39,14 @@ def set_state(c, agent_id, state, strikes=1, reason="test"):
         c.store.set_agent_state(db, c.run_id, agent_id, state, strikes, reason)
 
 
+QUARANTINE_VERDICTS = [{"monitor": "access-policy-v1", "verdict": "DENY", "rule": "agent-quarantined"}]
+
+
+def quarantine_denials(c):
+    return [e for e in c.store.events(c.run_id) if e["kind"] == "action.denied"
+            and any(v.get("rule") == "agent-quarantined" for v in e["detail"]["verdicts"])]
+
+
 def access_denials(c):
     return [e for e in c.store.events(c.run_id) if e["kind"] == "action.denied"
             and any(v.get("monitor") == ACCESS_MONITOR for v in e["detail"]["verdicts"])]
@@ -135,7 +143,8 @@ def test_restricted_agent_reads_board_but_cannot_claim_or_write(controller):
         controller.note(cred, "hello")
     assert controller.store.run(controller.run_id)["state"] == "RUNNING"
     denied = access_denials(controller)
-    assert [e["detail"]["action"] for e in denied] == ["claim_task"]
+    assert [(e["detail"]["action"], e["detail"]["verdicts"][0]["rule"]) for e in denied] == [
+        ("claim_task", "state-forbids-sensitivity"), ("post_note", "agent-quarantined")]  # the refused note is recorded too
     claim = denied[0]["detail"]
     assert claim["verdicts"] == [{"monitor": "access-policy-v1", "verdict": "DENY", "rule": "state-forbids-sensitivity",
         "attributes": {"role": "worker", "action": "claim_task", "sensitivity": "row-data",
@@ -157,6 +166,10 @@ def test_quarantined_agent_is_denied_everything(controller):
             attempt()
     assert controller.store.run(controller.run_id)["state"] == "RUNNING"
     assert not any(e["kind"] == "action.authorized" for e in controller.store.events(controller.run_id))
+    # Every refused attempt leaves a trace naming the action and the rule.
+    assert [(e["agent_id"], e["detail"]) for e in quarantine_denials(controller)] == [
+        ("worker-0", {"action": action, "verdicts": QUARANTINE_VERDICTS, "agent_state": "QUARANTINED"})
+        for action in ("list_tasks", "read_notes", "claim_task", "post_note")]
 
 
 def test_containment_change_before_dispatch_is_refused(controller):
@@ -186,7 +199,60 @@ def test_access_policy_runs_before_output_filter(controller):
     assert controller.store.run(controller.run_id)["state"] == "RUNNING"
     verdicts = [v for e in controller.store.events(controller.run_id) if e["kind"] == "action.denied"
                 for v in e["detail"]["verdicts"]]
-    assert verdicts == []
+    assert verdicts == QUARANTINE_VERDICTS  # the access refusal, and no output-filter verdict
+    [denied] = quarantine_denials(controller)
+    assert denied["detail"]["action"] == "post_note"
+
+
+def test_repeated_quarantined_attempts_are_rate_limited(controller):
+    gateway, cred = controller.gateway, controller.worker_tokens[0]
+    now = [1000.0]
+    gateway._clock = lambda: now[0]
+    set_state(controller, "worker-0", "QUARANTINED", 2)
+    for _ in range(3):
+        with pytest.raises(AgentQuarantined):
+            controller.note(cred, "hello")
+    assert [e["detail"] for e in quarantine_denials(controller)] == [
+        {"action": "post_note", "verdicts": QUARANTINE_VERDICTS, "agent_state": "QUARANTINED"}]
+    with pytest.raises(AgentQuarantined):
+        controller.claim(cred)  # another action has its own window
+    now[0] += gateway.quarantine_log_window + 1
+    with pytest.raises(AgentQuarantined):
+        controller.note(cred, "hello")
+    details = [e["detail"] for e in quarantine_denials(controller)]
+    assert [(d["action"], d.get("suppressed")) for d in details] == [
+        ("post_note", None), ("claim_task", None), ("post_note", 2)]
+
+
+def test_quarantined_inference_attempt_is_recorded_and_spends_nothing(controller):
+    cred = controller.worker_tokens[0]
+    set_state(controller, "worker-0", "QUARANTINED", 2)
+    before = controller.store.run(controller.run_id)["model_calls"]
+    with pytest.raises(AgentQuarantined):
+        controller.gateway.reserve_inference(cred, "agent")
+    assert controller.store.run(controller.run_id)["model_calls"] == before
+    assert not any(e["kind"] == "inference.requested" for e in controller.store.events(controller.run_id))
+    assert [e["detail"] for e in quarantine_denials(controller)] == [
+        {"action": "inference", "purpose": "agent", "verdicts": QUARANTINE_VERDICTS, "agent_state": "QUARANTINED"}]
+
+
+def test_quarantine_found_inside_the_inference_transaction_is_recorded(controller, monkeypatch):
+    # Quarantined after active() passed: the locked transaction refuses, and the record survives its rollback.
+    gateway, cred = controller.gateway, controller.worker_tokens[0]
+    real_active = gateway.active
+
+    def active(token, *args, **kwargs):
+        who = real_active(token, *args, **kwargs)
+        set_state(controller, who.agent_id, "QUARANTINED", 2)
+        return who
+
+    monkeypatch.setattr(gateway, "active", active)
+    before = controller.store.run(controller.run_id)["model_calls"]
+    with pytest.raises(AgentQuarantined):
+        gateway.reserve_inference(cred, "agent")
+    assert controller.store.run(controller.run_id)["model_calls"] == before
+    assert not any(e["kind"] == "inference.requested" for e in controller.store.events(controller.run_id))
+    assert [e["detail"]["action"] for e in quarantine_denials(controller)] == ["inference"]
 
 
 def test_run_started_records_access_policy(controller):
