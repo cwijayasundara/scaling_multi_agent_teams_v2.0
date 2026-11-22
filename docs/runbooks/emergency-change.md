@@ -75,4 +75,6 @@ security delete-generic-password -s teamlab-openai
 security add-generic-password -s teamlab-openai -a teamlab -w
 ```
 
+Each `delete-generic-password` removes one matching item. Repeat it until it reports that the item could not be found, so no older copy of the key is left behind.
+
 Linux: `secret-tool clear service teamlab-openai`, then `secret-tool store --label teamlab service teamlab-openai`. If a `.env` file holds the key, delete the line too; TeamLab warns `OPENAI_API_KEY was read from .env` when it does. Practice it (offline, no real key): `tests/test_teamlab.py::test_provider_key_reads_keychain_without_shell`, `test_provider_key_from_dotenv_is_flagged`.

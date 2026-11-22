@@ -6,6 +6,8 @@ The drill runs five synthetic attack incidents concurrently, each in its own roo
 teamlab tabletop --root runs/tabletop --ack-after 1
 ```
 
+Only scenarios that create their own run and touch nothing outside their root can be incidents. `tampered-policy-config` and `plane-untrusted-client` are marked `isolation: process-wide` in `src/teamlab/threats.json` (they patch the process environment or the profile path), so `run_tabletop` refuses them before any incident starts; run them alone with `teamlab attack-suite --include-slow`.
+
 `--ack-after SECONDS` stands in for the human; omit it to see every alert triaged and open. For a real exercise, leave it out and acknowledge by hand with `teamlab ack` (see [incident-response.md](incident-response.md)).
 
 ## What to watch
