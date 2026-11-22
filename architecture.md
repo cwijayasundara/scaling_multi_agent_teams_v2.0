@@ -79,7 +79,7 @@ flowchart TD
 
 ## Zero Trust tier scorecard
 
-Mapped against the Part III tier tables of the Zero Trust for agentic AI eBook (Foundation, Enterprise, Advanced). "Tier now" is the highest tier TeamLab meets as built, judged conservatively. Tests named are in `tests/`. This is a self-assessment of a local development build, not an audit.
+Mapped against the Part III tier tables of the Zero Trust for AI Agents eBook (Foundation, Enterprise, Advanced). "Tier now" is the highest tier TeamLab meets as built, judged conservatively. Tests named are in `tests/`. This is a self-assessment of a local development build, not an audit.
 
 | eBook control | Tier now | Evidence | Remaining gap |
 |---|---|---|---|
@@ -97,7 +97,9 @@ Mapped against the Part III tier tables of the Zero Trust for agentic AI eBook (
 | Output filtering | Foundation (new) | Gateway output filter stops a team that writes a credential into a note; export redacts credentials and PII in `model_summaries.json` and counts findings in the other exported files in `dlp.json`: `test_note_with_credential_stops_team_and_is_not_stored`, `test_export_redacts_model_summaries_and_writes_dlp_report`, `test_redact_merges_overlapping_matches`, `test_redact_private_key_covers_whole_block` | Pattern matching only. No semantic or encoding-aware analysis (Enterprise) |
 | Configuration integrity | Enterprise | Behaviour profiles, the access policy and the OpenShell sandbox policy carry Ed25519 signatures over file name and SHA-256, verified before a run row is written and parsed from the verified bytes; signer key ids are recorded in `run.started` (`teamlab config keygen`, `sign`, `verify`): `test_shipped_configs_verify_with_packaged_signer`, `test_signed_copy_verifies`, `test_tampered_config_is_refused`, `test_read_verified_returns_the_verified_bytes`, `test_controller_refuses_unsigned_profiles_before_writing_a_run`, `test_run_started_records_config_signers`, `test_sandbox_policy_is_read_from_the_signed_file`, `test_broker_writes_the_verified_policy_bytes`, `test_keygen_refuses_to_overwrite_and_sets_0600`, `test_config_cli_keygen_sign_verify_roundtrip`, `test_signers_env_overrides_packaged_file` | The signer trust anchor defaults to the repository (`config_signers.json`), so an attacker who can edit the repository can replace it; production must set `TEAMLAB_CONFIG_SIGNERS` to an operator-controlled file. Rollback is possible: the signature covers file name and hash only, with no version or serial, so an older legitimately signed config is accepted. No hardware-backed keys. `agents.json` and `dlp.json` are evidence, not signed policy |
 | Recovery | Foundation, partly Enterprise | Foundation part: clean restart after a stop (`test_attack_demo_and_clean_restart`). Enterprise-leaning part: integrity-checked round-boundary task snapshots restored under fresh authority (`recovery.py`, `test_reviewed_round_checkpoint_restores_verified_work_with_new_authority`, `test_checkpoint_tampering_rejected`) | No automated rollback with health checks. Real-guest recovery not run |
-| Governance | Foundation | `SECURITY.md` | No formal governance framework or stakeholder oversight. Shadow AI is not addressed |
+| Governance | Foundation | `SECURITY.md`, plus operator runbooks for acceptable use, incident response and emergency change in [docs/runbooks/](docs/runbooks/) and a tabletop exercise (`teamlab tabletop`, see [tabletop.md](docs/runbooks/tabletop.md)) | No formal governance framework or stakeholder oversight. Shadow AI is not addressed |
+
+**Threat coverage:** the OWASP/MITRE-mapped attack suite (`teamlab attack-suite`) prevented 12 of 12 scenarios, detected 10 and triaged 8; indirect prompt injection and stale result after stop are prevented but not detected. See [reports/threat-coverage.md](reports/threat-coverage.md).
 
 ### What is still below Foundation or only Foundation
 

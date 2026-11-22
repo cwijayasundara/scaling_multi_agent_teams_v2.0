@@ -46,6 +46,8 @@ teamlab config sign --key .secrets/config-signing-new.key src/teamlab/behavior_p
 teamlab config verify
 ```
 
+4. Remove the old signer entry from the signers file, then run `teamlab config verify` again. It passing proves the new key alone is trusted.
+
 Practice it: `tests/test_config_signing.py::test_config_cli_keygen_sign_verify_roundtrip`, `test_signers_env_overrides_packaged_file`.
 
 ## Re-sign after a reviewed policy change
