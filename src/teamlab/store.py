@@ -34,6 +34,10 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE TABLE IF NOT EXISTS verification (
  run_id TEXT PRIMARY KEY, candidate_hash TEXT NOT NULL, verdict TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS agent_keys (
+ key_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, agent_id TEXT NOT NULL,
+ role TEXT NOT NULL, public_key TEXT NOT NULL, created REAL NOT NULL
+);
 """
 
 

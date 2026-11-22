@@ -7,7 +7,7 @@ name = "secure-teamlab"
 version = "0.1.0"
 description = "A bounded multi-agent analytics experiment with external action enforcement"
 requires-python = ">=3.12"
-dependencies = ["deepagents==0.7.32", "langchain-openai==1.7.3", "openai==3.42.0"]
+dependencies = ["deepagents==0.7.32", "langchain-openai==1.7.3", "openai==3.42.0", "cryptography==50.0.2"]
 
 [project.optional-dependencies]
 test = ["pytest==9.2.0"]

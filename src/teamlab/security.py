@@ -13,6 +13,7 @@ from threading import Thread
 from queue import Queue, Empty
 
 from .analytics import canonical, digest
+from .identity import Credential, new_credential, verify_signature
 from .store import Store
 
 
@@ -200,22 +201,32 @@ class Gateway:
         self.journal = Journal(store.root / "audit.jsonl")
         self.journal.verify()
         self._sessions: dict[str, Identity] = {}
+        self._public_keys: dict[str, tuple[str, str]] = {}
         self.archive = None
         for monitor in self.monitors:
             if isinstance(monitor, LunaMonitor):
                 monitor.usage_callback = self.record_monitor_usage
 
-    def issue(self, agent_id: str, role: str, shard: int | None = None) -> str:
+    def issue(self, agent_id: str, role: str, shard: int | None = None) -> Credential:
         if role not in CAPABILITIES:
             raise SecurityError("unknown role")
         run = self.store.run(self.run_id)
         token = secrets.token_urlsafe(32)
+        cred = new_credential(agent_id, token, time.time() + 300)
+        with self.store.transaction() as db:
+            db.execute("INSERT INTO agent_keys(key_id,run_id,agent_id,role,public_key,created) VALUES (?,?,?,?,?,?)", (
+                cred.key_id, self.run_id, agent_id, role, cred.public_key_b64(), time.time()))
+            self.store.event(db, self.run_id, agent_id, "agent.key_registered", {
+                "agent_id": agent_id, "role": role, "key_id": cred.key_id})
+        self._public_keys[cred.key_id] = (self.run_id, cred.public_key_b64())
         self._sessions[token] = Identity(self.run_id, agent_id, role, run["epoch"], shard)
-        return token
+        return cred
 
-    def identity(self, token: str) -> Identity:
+    def identity(self, cred: Credential) -> Identity:
         try:
-            return self._sessions[token]
+            if not isinstance(cred, Credential):
+                raise KeyError
+            return self._sessions[cred.token]
         except KeyError as exc:
             raise SecurityError("invalid service identity") from exc
 
@@ -276,6 +287,14 @@ class Gateway:
         if len(canonical(args).encode()) > 512_000:
             self.store.stop(who.run_id, "oversized action", "PAUSED")
             raise SecurityError("oversized action")
+        operation_id = secrets.token_hex(16)
+        envelope = {"operation_id": operation_id, "run_id": who.run_id, "agent_id": who.agent_id,
+            "action": action, "args_hash": digest(args), "epoch": who.epoch, "issued_at": time.time()}
+        signature = token.sign(envelope)
+        registered = self._public_keys.get(token.key_id)
+        if registered is None or registered[0] != who.run_id or not verify_signature(registered[1], envelope, signature):
+            self.store.stop(who.run_id, f"request signature invalid: {who.agent_id}/{action}")
+            raise SecurityError("request signature invalid; entire team stopped")
         with self.store.connect() as context_db:
             context_rows = context_db.execute('SELECT * FROM events WHERE run_id=? ORDER BY seq DESC LIMIT 256', (who.run_id,)).fetchall()
         context = [{**dict(row), 'detail': json.loads(row['detail'])} for row in reversed(context_rows)]
@@ -304,9 +323,9 @@ class Gateway:
                     reason = f"{monitor.name}: {verdict} on {who.agent_id}/{action}"
                     self.store.stop(who.run_id, reason, "STOPPED" if verdict == "BLOCK" else "PAUSED")
                     raise RunStopped(f"security monitor stopped or paused the entire team: {reason}")
-            operation_id = secrets.token_hex(16)
             record = {"operation_id": operation_id, "run_id": who.run_id, "agent_id": who.agent_id,
                 "action": action, "args_hash": digest(args), "epoch": who.epoch,
+                "request": envelope, "key_id": token.key_id, "signature": signature,
                 "verdicts": verdicts, "time": time.time(), "policy_version": "role-scope-board-v2",
                 "arguments_summary": {key: value for key, value in args.items() if key in ("text", "shard", "fence", "result_hash", "candidate_hash", "task_id", "source_hash", "title", "partitions")}}
             self.journal.append(record)  # Refuse dispatch if the audit sink is unavailable.

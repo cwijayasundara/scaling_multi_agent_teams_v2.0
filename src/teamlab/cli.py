@@ -326,7 +326,11 @@ def main(argv=None):
                 grader = PlaneClient(Path(args.control_plane)).grade
             print(json.dumps(validate_bundle(Path(args.path), grader=grader), indent=2))
         elif args.command == "verify-audit":
-            print(json.dumps({"verified_records": Journal(Path(args.root) / "audit.jsonl").verify()}))
+            from .identity import verify_journal_signatures
+            journal_path = Path(args.root) / "audit.jsonl"
+            store = Store(Path(args.root), database_url=os.environ.get("TEAMLAB_DATABASE_URL"))
+            print(json.dumps({"verified_records": Journal(journal_path).verify(),
+                "verified_signatures": verify_journal_signatures(journal_path, store)}))
         elif args.command in ("status", "monitor", "stop"):
             store = Store(Path(args.root), database_url=os.environ.get("TEAMLAB_DATABASE_URL"))
             if args.command == "stop":

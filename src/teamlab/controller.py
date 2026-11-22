@@ -216,6 +216,9 @@ class Controller:
                 sources = [dict(r) for r in db.execute('SELECT * FROM work_artifacts WHERE run_id=?', (self.run_id,))]
                 (out / 'task_tree.json').write_text(canonical(work)+'\n')
                 (out / 'sources.json').write_text(canonical(sources)+'\n')
+        with self.store.connect() as db:
+            keys = [dict(r) for r in db.execute('SELECT agent_id,role,key_id,public_key FROM agent_keys WHERE run_id=? ORDER BY created,agent_id', (self.run_id,))]
+        (out / "agents.json").write_text(canonical(keys) + "\n")
         (out / "model_summaries.json").write_text(json.dumps(self.model_summaries, indent=2) + "\n")
         manifest = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in out.iterdir() if p.is_file() and p.name != "manifest.json"}
         (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

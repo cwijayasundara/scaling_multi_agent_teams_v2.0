@@ -13,6 +13,7 @@ Task data is synthetic. The operator chooses the input path through the CLI. Mod
 - Server-owned role capabilities and run membership precede dispatch; authenticated identity fields in arguments are rejected.
 - Serious forbidden operations stop the whole team. Monitor uncertainty/failure and missing audit storage pause it without executing pending operations.
 - Run epochs are checked in the same transaction as durable effects. Task leases have fencing tokens and expiry. Old worker results cannot commit after operator stop or re-leasing.
+- Per-agent Ed25519 keys sign every request. Keys live in the same trusted process, so this gives attribution and log-forgery detection, not protection against compromise of that process.
 - Fixed tool work and data sizes are bounded. The runtime never treats a classifier approval as permission to execute a shell or bypass an absent capability.
 - Local audit records are outside model tools. Hash chaining detects modifications relative to the recorded chain, but does not prevent a local administrator from rewriting or truncating everything. A loopback MinIO Object Lock check is recorded in [reports/object-lock-qualification.json](reports/object-lock-qualification.json). It is not an AWS account, IAM, or cloud-retention guarantee.
 - The read-only monitoring API uses bearer authentication, binds to loopback, and exposes no approvals, restart, or policy changes. CLI controls inherit the local user's OS permissions.
