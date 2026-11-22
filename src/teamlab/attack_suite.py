@@ -528,7 +528,7 @@ def render_matrix(report: dict, catalogue: dict) -> str:
             gaps.append(f"- `{s['id']}` is unmapped: {s['unmapped']}")
     if catalogue.get("uncovered"):
         gaps.append("- Uncovered threat classes: " + "; ".join(
-            f"{u['class']} (OWASP {u['owasp_id']} {u['owasp_name']}): {u['reason']}" for u in catalogue["uncovered"]))
+            f"{u['class']} (OWASP {u['owasp_id']} {u['owasp_name']}): {u['reason'].rstrip('.')}" for u in catalogue["uncovered"]) + ".")
     lines += gaps or ["- None measured."]
     lines += ["", "## Notes per scenario", ""]
     lines += [f"- `{r['id']}`: {r['notes']}" for r in report["results"]]
