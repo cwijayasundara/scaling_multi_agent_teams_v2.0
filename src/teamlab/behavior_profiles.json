@@ -1,0 +1,8 @@
+{"version": "profiles-v1",
+ "roles": {
+  "coordinator": {"default_max_calls_per_action": 40, "max_calls_per_action": {"post_note": 20, "record_plan": 10, "publish": 2, "publish_work": 2},
+                  "max_calls_per_minute": 120, "max_failures": 5},
+  "worker": {"default_max_calls_per_action": 40, "max_calls_per_action": {"post_note": 10, "claim_task": 3, "write_artifact": 6, "run_artifact": 6},
+             "max_calls_per_minute": 60, "max_failures": 3},
+  "verifier": {"default_max_calls_per_action": 80, "max_calls_per_action": {"post_note": 10, "verify_task": 160, "verify_artifact": 160},
+               "max_calls_per_minute": 120, "max_failures": 5}}}

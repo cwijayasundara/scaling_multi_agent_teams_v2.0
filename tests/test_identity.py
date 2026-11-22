@@ -19,26 +19,6 @@ def controller(tmp_path):
     return Controller(tmp_path / "run", source)
 
 
-class Clock:
-    def __init__(self, base):
-        self.base, self.offset = base, 0.0
-
-    def advance(self, seconds, past_deadline=False):
-        self.offset += seconds
-        assert past_deadline or self.offset < 1200, "stay inside the run deadline"
-
-    def __call__(self):
-        return self.base + self.offset
-
-
-@pytest.fixture
-def clock(monkeypatch):
-    # Patch time.time globally so store, controller leases and gateway agree.
-    fake = Clock(time.time())
-    monkeypatch.setattr(time, 'time', fake)
-    return fake
-
-
 def test_each_agent_has_distinct_registered_key(controller):
     creds = [controller.lead, controller.verifier, *controller.worker_tokens.values()]
     assert len({c.key_id for c in creds}) == len(creds) == 6

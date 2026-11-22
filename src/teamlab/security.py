@@ -15,6 +15,7 @@ from queue import Queue, Empty
 from .analytics import canonical, digest
 from . import dlp, tracing
 from .identity import Credential, new_credential, verify_signature
+from .profiles import PROFILE_MONITOR, Profiles, load_profiles
 from .store import Store
 
 
@@ -210,8 +211,10 @@ class Gateway:
     output_filter_name = "output-filter-v1"
 
     def __init__(self, store: Store, run_id: str, monitors=None, monitor_timeout=10,
-                 credential_ttl=CREDENTIAL_TTL_SECONDS, refresh_margin=60):
+                 credential_ttl=CREDENTIAL_TTL_SECONDS, refresh_margin=60, profiles: Profiles | None = None):
         self.store, self.run_id = store, run_id
+        # Gateway code, not a monitor: replacing self.monitors cannot remove it.
+        self.profiles = profiles if profiles is not None else load_profiles()
         self.monitors = monitors if monitors is not None else [RuleMonitor()]
         if not self.monitors:
             raise SecurityError("at least one monitor is required")
@@ -377,6 +380,7 @@ class Gateway:
         # Gateway code, not a monitor: replacing self.monitors cannot remove it.
         hits = [h for h in dlp.scan_args(args) if h["kind"] in dlp.SECRET_KINDS]
         if hits:
+            self.profiles.record_failure(who.agent_id)
             verdict = {"monitor": self.output_filter_name, "verdict": "BLOCK",
                 "kinds": sorted({h["kind"] for h in hits}), "fields": sorted({h["field"] for h in hits})}
             with self.store.transaction() as db:
@@ -385,6 +389,15 @@ class Gateway:
             reason = f"{self.output_filter_name}: BLOCK on {who.agent_id}/{action}"
             self.store.stop(who.run_id, reason, "STOPPED")
             raise RunStopped(f"output filter stopped the entire team: {reason}")
+        breach = self.profiles.check(who.agent_id, who.role, action, time.time())
+        if breach:
+            verdict = {"monitor": PROFILE_MONITOR, "verdict": "PAUSE", **breach}
+            with self.store.transaction() as db:
+                self.store.event(db, who.run_id, who.agent_id, "action.denied", {
+                    "action": action, "args_hash": digest(args), "verdicts": [verdict]})
+            reason = f"{PROFILE_MONITOR}: PAUSE on {who.agent_id}/{action}"
+            self.store.stop(who.run_id, reason, "PAUSED")
+            raise RunStopped(f"behaviour profile paused the entire team: {reason}")
         with self.store.connect() as context_db:
             context_rows = context_db.execute('SELECT * FROM events WHERE run_id=? ORDER BY seq DESC LIMIT 256', (who.run_id,)).fetchall()
         context = [{**dict(row), 'detail': json.loads(row['detail'])} for row in reversed(context_rows)]
@@ -406,6 +419,7 @@ class Gateway:
                 verdict = bounded_monitor(monitor, who, action, args, context, self.monitor_timeout, trusted_state)
                 verdicts.append({"monitor": monitor.name, "verdict": verdict})
                 if verdict != "ALLOW":
+                    self.profiles.record_failure(who.agent_id)
                     with self.store.transaction() as db:
                         self.store.event(db, who.run_id, who.agent_id, "action.denied", {
                             "action": action, "args_hash": digest(args), "verdicts": verdicts,
@@ -447,7 +461,13 @@ class Gateway:
                 db.execute("UPDATE runs SET calls=calls+1 WHERE id=?", (who.run_id,))
                 self.store.event(db, who.run_id, who.agent_id, "action.authorized", record)
                 with tracing.active(operation_id):
-                    result = handler(db, who)
+                    try:
+                        result = handler(db, who)
+                    except RunStopped:
+                        raise
+                    except Exception:
+                        self.profiles.record_failure(who.agent_id)  # the transaction rolls back
+                        raise
                 self.store.event(db, who.run_id, who.agent_id, "action.committed", {
                     "operation_id": operation_id, "action": action, "result_hash": digest(result),
                 })

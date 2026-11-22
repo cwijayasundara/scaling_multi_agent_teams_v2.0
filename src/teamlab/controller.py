@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .analytics import analyze, canonical, combine, digest
 from .fixture import read_records, shard_for
+from .profiles import load_profiles
 from .security import CREDENTIAL_TTL_SECONDS, Gateway, RunStopped, SecurityError
 from .store import Store
 from .tracing import span, trace_tree
@@ -33,6 +34,7 @@ class Controller:
         self.workers = workers
         self.run_id = secrets.token_hex(12)
         self.mode = mode
+        profiles = load_profiles()
         with self.store.transaction() as db:
             db.execute("INSERT INTO runs(id,state,epoch,input_hash,workers,mode,created,deadline) VALUES (?,'RUNNING',1,?,?,?,?,?)", (
                 self.run_id, self.input_hash, workers, mode, time.time(), time.time() + 1200,
@@ -44,8 +46,9 @@ class Controller:
                 "mode": mode, "input_hash": self.input_hash, "workers": workers,
                 "execution_profile": "trusted-tools-only; no model-written code or host shell",
                 "provider_key_source": provider_key_source,
+                "behavior_profile": {"version": profiles.version, "sha256": profiles.sha256},
             })
-        self.gateway = Gateway(self.store, self.run_id, monitors=monitors, credential_ttl=credential_ttl)
+        self.gateway = Gateway(self.store, self.run_id, monitors=monitors, credential_ttl=credential_ttl, profiles=profiles)
         self.lead = self.gateway.issue("coordinator", "coordinator")
         self.verifier = self.gateway.issue("verifier", "verifier")
         self.worker_tokens = {i: self.gateway.issue(f"worker-{i}", "worker", i) for i in range(workers)}

@@ -1,5 +1,6 @@
 import os
 import subprocess
+import time
 
 import pytest
 
@@ -31,3 +32,23 @@ def credential_store(monkeypatch):
         os.environ.pop("OPENAI_API_KEY", None)
     else:
         os.environ["OPENAI_API_KEY"] = original
+
+
+class Clock:
+    def __init__(self, base):
+        self.base, self.offset = base, 0.0
+
+    def advance(self, seconds, past_deadline=False):
+        self.offset += seconds
+        assert past_deadline or self.offset < 1200, "stay inside the run deadline"
+
+    def __call__(self):
+        return self.base + self.offset
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    # Patch time.time globally so store, controller leases and gateway agree.
+    fake = Clock(time.time())
+    monkeypatch.setattr(time, 'time', fake)
+    return fake
