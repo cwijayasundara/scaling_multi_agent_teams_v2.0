@@ -54,7 +54,8 @@ def test_shipped_policy_loads_and_covers_every_capability_once():
 
 
 @pytest.mark.parametrize("mutation", ["missing capability", "unknown capability", "unknown class",
-                                      "unknown state", "missing state", "duplicate capability"])
+                                      "unknown state", "missing state", "duplicate capability",
+                                      "unknown strike source", "missing strike source"])
 def test_invalid_policy_fails_closed(tmp_path, config_signer, mutation):
     data = json.loads(json.dumps(SHIPPED))
     text = None
@@ -68,6 +69,10 @@ def test_invalid_policy_fails_closed(tmp_path, config_signer, mutation):
         data["allowed_by_state"]["SUSPENDED"] = []
     elif mutation == "missing state":
         del data["allowed_by_state"]["QUARANTINED"]
+    elif mutation == "unknown strike source":
+        data["containment"]["strikes"]["behaviour-profile-v1"] = 1  # a misspelt source would never strike
+    elif mutation == "missing strike source":
+        del data["containment"]["strikes"]["credential.rejected"]
     else:
         text = json.dumps(data).replace('"list_tasks": "board-read"', '"list_tasks": "board-read", "list_tasks": "publication"')
     bad = tmp_path / "access_policy.json"

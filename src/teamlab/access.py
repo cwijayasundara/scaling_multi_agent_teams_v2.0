@@ -9,12 +9,15 @@ import json
 from pathlib import Path
 
 from .config_signing import read_verified
+from .profiles import PROFILE_MONITOR
 from .store import AGENT_STATES
 
 ACCESS_MONITOR = "access-policy-v1"
 DEFAULT_PATH = Path(__file__).with_name("access_policy.json")
 SENSITIVITY_CLASSES = frozenset({"board-read", "board-write", "row-data", "execution", "verification", "publication"})
 _CONTAINMENT_KEYS = frozenset({"restrict_at_strikes", "quarantine_at_strikes", "strikes"})
+# Every source that calls containment.strike(); a missing or misspelt one must not load.
+STRIKE_SOURCES = frozenset({PROFILE_MONITOR, "credential.rejected", ACCESS_MONITOR})
 
 
 def _no_duplicates(pairs):
@@ -63,8 +66,8 @@ def load_access_policy(path: Path | None = None) -> "AccessPolicy":
     restrict = _positive(containment["restrict_at_strikes"], "containment.restrict_at_strikes")
     if _positive(containment["quarantine_at_strikes"], "containment.quarantine_at_strikes") <= restrict:
         raise ValueError("containment.quarantine_at_strikes must exceed restrict_at_strikes")
-    if not isinstance(containment["strikes"], dict):
-        raise ValueError("containment.strikes must be an object")
+    if not isinstance(containment["strikes"], dict) or set(containment["strikes"]) != STRIKE_SOURCES:
+        raise ValueError(f"containment.strikes must name exactly the sources {sorted(STRIKE_SOURCES)}")
     for source, strikes in containment["strikes"].items():
         _positive(strikes, f"containment.strikes.{source}")
     return AccessPolicy(data["version"], hashlib.sha256(raw).hexdigest(), signer, sensitivity,
