@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {formatDuration,formatCoverage,healthModel} from '../lib/metrics.mjs';
+import {formatDuration,formatCoverage,healthModel,parseMetrics} from '../lib/metrics.mjs';
 const base={alerts:4,triage_coverage:1,human_coverage:0.75,dwell_p50_s:720,open_alerts:0,slo_breaches:0};
 const tone=(m,id)=>healthModel(m).tiles.find(t=>t.id===id).tone;
 test('formatDuration',()=>{
@@ -22,4 +22,11 @@ test('healthModel tiles and tones',()=>{
  assert.equal(tone(base,'open_alerts'),'ok');
  assert.equal(tone({...base,open_alerts:2},'open_alerts'),'warn');
  assert.equal(tone({...base,open_alerts:2,slo_breaches:1},'slo_breaches'),'bad');
+});
+test('parseMetrics accepts the unwrapped route payload and rejects anything else',()=>{
+ const payload={run_id:'a'.repeat(24),alerts:2,triaged:2,acknowledged:1,triage_coverage:1,human_coverage:0.5,dwell_p50_s:30,open_alerts:1,slo_breaches:0,dwell_measured_from:'alert detection',items:[]};
+ assert.equal(parseMetrics(payload),payload);
+ assert.equal(healthModel(parseMetrics(payload)).empty,false);
+ assert.throws(()=>parseMetrics({}),/unexpected metrics response/);
+ assert.throws(()=>parseMetrics({alert_metrics:payload}),/unexpected metrics response/);
 });

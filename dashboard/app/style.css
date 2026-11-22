@@ -224,6 +224,7 @@ dialog .boundary{margin-bottom:8px}
 /* Scrollbars */
 *{scrollbar-width:thin;scrollbar-color:#2e2e36 transparent}
 
+.alert-health{padding:16px 20px;margin:0 0 32px}.alert-health .stats{grid-template-columns:repeat(3,1fr);margin:12px 0}
 @media(prefers-reduced-motion:reduce){
   .flow-particle{display:none}.flow-flash{animation:none;opacity:.6}
   .map-agent rect,.allocation-agent,.agent{transition:none}.status-live i{animation:none}
@@ -239,6 +240,7 @@ dialog .boundary{margin-bottom:8px}
   .activity-bottom{grid-template-columns:1fr}
 }
 @media(max-width:600px){
+  .alert-health .stats{grid-template-columns:1fr}
   main,.topbar-inner{padding-left:16px;padding-right:16px}
   .stats{grid-template-columns:1fr}
   .run-picker>span,.conn{display:none}
@@ -250,4 +252,3 @@ dialog .boundary{margin-bottom:8px}
   .event-head,.event{grid-template-columns:70px 1fr}
   .event-head span:nth-child(3),.event .kind{display:none}
 }
-.alert-health{padding:16px 20px;margin:0 0 32px}.alert-health .stats{grid-template-columns:repeat(3,1fr);margin:12px 0}

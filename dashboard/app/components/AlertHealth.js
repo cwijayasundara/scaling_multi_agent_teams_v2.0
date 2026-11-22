@@ -1,13 +1,13 @@
 'use client';
 import {useEffect, useState} from 'react';
-import {healthModel} from '../../lib/metrics.mjs';
+import {healthModel,parseMetrics} from '../../lib/metrics.mjs';
 
 async function api(path, signal) { const r=await fetch('/api/teamlab/'+path,{cache:'no-store',signal}); const d=await r.json(); if(!r.ok) throw Error(d.error || `Server returned ${r.status}`); return d; }
 
 export default function AlertHealth({runId}){
  const [m,setM]=useState(null),[error,setError]=useState('');
  useEffect(()=>{setM(null);setError('');if(!runId)return;const ac=new AbortController();
-  async function load(){try{setM((await api(`runs/${runId}/metrics`,ac.signal)).alert_metrics);setError('')}catch(e){if(!ac.signal.aborted)setError(e.message)}}
+  async function load(){try{setM(parseMetrics(await api(`runs/${runId}/metrics`,ac.signal)));setError('')}catch(e){if(!ac.signal.aborted)setError(e.message)}}
   load();const t=setInterval(load,5000);return()=>{ac.abort();clearInterval(t)}},[runId]);
  const h=m&&healthModel(m);
  return <section className="card alert-health">
