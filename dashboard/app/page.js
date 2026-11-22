@@ -1,6 +1,7 @@
 'use client';
 import {useEffect, useRef, useState} from 'react';
 import ActivityAnimator from './components/ActivityAnimator';
+import AlertHealth from './components/AlertHealth';
 import {workModel} from '../lib/work.mjs';
 
 const time = n => new Date(n*1000).toLocaleTimeString();
@@ -70,6 +71,8 @@ export default function Dashboard(){
   <article><span>Tool dispatches</span><strong>{run.calls}</strong><small>{decisions.length} safety decisions{denied?` · ${denied} denied`:''}</small></article>
   <article><span>Model requests</span><strong>{run.model_calls}</strong><small>Including security monitors</small></article>
  </section>
+
+ <AlertHealth key={id} runId={id}/>
 
  <section className="section-title"><h2>Agents</h2><span>Select an agent to inspect its recorded activity</span></section>
  <section className="agents">{actors.map(a=>{const es=visible.filter(e=>e.agent_id===a), last=es.at(-1), task=work.dynamic?work.nodes.filter(t=>t.actor===a).at(-1):data.tasks.find(t=>t.owner===a);return <button className="agent" key={a} onClick={()=>setPanel({type:'agent',agent:a,title:role(a)})}>

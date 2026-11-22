@@ -250,3 +250,4 @@ dialog .boundary{margin-bottom:8px}
   .event-head,.event{grid-template-columns:70px 1fr}
   .event-head span:nth-child(3),.event .kind{display:none}
 }
+.alert-health{padding:16px 20px;margin:0 0 32px}.alert-health .stats{grid-template-columns:repeat(3,1fr);margin:12px 0}

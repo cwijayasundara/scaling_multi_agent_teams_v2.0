@@ -15,6 +15,17 @@ test('requires a server credential and allows only monitoring routes',async()=>{
  assert.equal((await GET(request(),params)).status,503);
  assert.equal((await GET(request(),{params:Promise.resolve({path:['runs','../secret','snapshot']})})).status,404);
 });
+test('forwards metrics routes and rejects write-like routes',async()=>{
+ process.env.TEAMLAB_MONITOR_TOKEN='test-token-'.repeat(4);
+ const saved=global.fetch, id='a'.repeat(24), seen=[];
+ try {
+ global.fetch=async(url)=>{seen.push(String(url).replace('http://127.0.0.1:8765',''));return Response.json({ok:1})};
+ for (const path of [['metrics'],['runs',id,'metrics'],['runs',id,'triage'],['runs',id,'trace']]) assert.equal((await GET(request(),{params:Promise.resolve({path})})).status,200);
+ assert.deepEqual(seen,['/metrics','/runs/'+id+'/metrics','/runs/'+id+'/triage','/runs/'+id+'/trace']);
+ assert.equal((await GET(request(),{params:Promise.resolve({path:['runs',id,'ack']})})).status,404);
+ assert.equal(seen.length,4);
+ }finally{global.fetch=saved;delete process.env.TEAMLAB_MONITOR_TOKEN}
+});
 test('keeps token upstream and forwards errors safely',async()=>{
  process.env.TEAMLAB_MONITOR_TOKEN='test-token-'.repeat(4);
  const saved=global.fetch;

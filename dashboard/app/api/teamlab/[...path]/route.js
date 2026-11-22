@@ -7,7 +7,7 @@ export async function GET(request, {params}) {
   if (origin && origin !== new URL(request.url).origin) return new Response('Origin rejected', {status:403});
   if (request.headers.get('sec-fetch-site') === 'cross-site') return new Response('Cross-site access rejected', {status:403});
   const {path} = await params;
-  if (!(path.length === 1 && path[0] === 'runs') && !(path.length === 3 && path[0] === 'runs' && /^[a-f0-9]{24}$/.test(path[1]) && ['snapshot','review','events'].includes(path[2]))) return new Response('Not found',{status:404});
+  if (!(path.length === 1 && ['runs','metrics'].includes(path[0])) && !(path.length === 3 && path[0] === 'runs' && /^[a-f0-9]{24}$/.test(path[1]) && ['snapshot','review','events','metrics','triage','trace'].includes(path[2]))) return new Response('Not found',{status:404});
   const token = process.env.TEAMLAB_MONITOR_TOKEN;
   if (!token || token.length < 32) return Response.json({error:'Set TEAMLAB_MONITOR_TOKEN on the Next.js server (at least 32 characters).'}, {status:503});
   try {
