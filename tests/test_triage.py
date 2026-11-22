@@ -100,17 +100,17 @@ def test_rule_mapping_covers_known_reasons():
     assert assess('run.paused', {'reason': 'run deadline exceeded'})[:3] == ('operational', 'raise_limits', 'high')
     assert assess('run.stopped', {'reason': 'operator found a bad input'})[:3] == ('operational', 'restart_clean', 'low')
     assert assess('run.paused', {'reason': 'oversized action'})[:3] == ('needs_human', 'escalate', 'low')
-    assert assess('credential.rejected', {'agent_id': 'worker-1', 'key_id': 'k', 'reason': 'refresh signature invalid'}, 'worker-1') == ('needs_human', 'escalate', 'low', [5, 3])
+    assert assess('credential.rejected', {'agent_id': 'worker-1', 'key_id': 'k', 'reason': 'refresh signature invalid'}, 'worker-1') == ('likely_true_positive', 'escalate', 'medium', [5, 3])
     assert ALERT_KINDS == {'action.denied', 'run.stopped', 'run.paused', 'credential.rejected'}
 
 
 def test_model_triage_accepts_supported_evidence(controller):
-    violate(controller)
+    controller.store.stop(controller.run_id, 'operator found a bad input')
     seq = kinds(controller, 'run.stopped')[0]['seq']
-    fake = FakeClient(output={'think': 'forbidden tool', 'classification': 'likely_true_positive', 'recommended_action': 'keep_stopped', 'confidence': 'medium', 'evidence': [seq]})
+    fake = FakeClient(output={'think': 'operator stop', 'classification': 'operational', 'recommended_action': 'restart_clean', 'confidence': 'medium', 'evidence': [seq]})
     d = triage_run(controller.store, controller.run_id, ModelTriage(fake))[0]
-    assert d['triager'] == 'luna-triage-v1' and 'triage_error' not in d
-    assert d['report']['confidence'] == 'medium' and d['evidence'] == [seq] and d['think'] == 'forbidden tool'
+    assert d['triager'] == 'luna-triage-v1' and 'triage_error' not in d and 'model_report' not in d
+    assert d['report']['confidence'] == 'medium' and d['evidence'] == [seq] and d['think'] == 'operator stop'
 
 
 def test_model_triage_rejects_unsupported_evidence_and_falls_back(controller):
@@ -215,3 +215,34 @@ def test_monitor_api_serves_triage(controller):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_execute_triages_a_completed_runs_alerts(tmp_path, monkeypatch, capsys):
+    from teamlab.store import Store
+    original = Controller.run_scripted
+
+    def run_with_rejection(self):
+        with self.store.transaction() as db:
+            self.store.event(db, self.run_id, 'worker-0', 'credential.rejected',
+                {'agent_id': 'worker-0', 'key_id': 'k', 'reason': 'refresh signature invalid'})
+        return original(self)
+    monkeypatch.setattr(Controller, 'run_scripted', run_with_rejection)
+    assert main(['run', '--root', str(tmp_path / 'r'), '--rows', '100']) == 0
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert lines[-1]['state'] == 'COMPLETED'
+    assert {'triaged_alerts': 1} in lines
+    triaged = [e['detail'] for e in Store(tmp_path / 'r').events(lines[-1]['run_id']) if e['kind'] == 'alert.triaged']
+    assert [(d['classification'], d['recommended_action']) for d in triaged] == [('likely_true_positive', 'escalate')]
+
+
+def test_model_triage_cannot_downgrade_a_deterministic_block(controller):
+    violate(controller)
+    seq = kinds(controller, 'run.stopped')[0]['seq']
+    fake = FakeClient(output={'think': 'looks benign', 'classification': 'likely_false_positive',
+        'recommended_action': 'restart_clean', 'confidence': 'high', 'evidence': [seq]})
+    d = triage_run(controller.store, controller.run_id, ModelTriage(fake))[0]
+    assert d['report'] == {'classification': 'likely_true_positive', 'recommended_action': 'keep_stopped', 'confidence': 'high'}
+    assert 'triage_error' not in d and len(fake.calls) == 1
+    assert d['model_report'] == {'think': 'looks benign', 'classification': 'likely_false_positive',
+        'recommended_action': 'restart_clean', 'confidence': 'high', 'evidence': [seq]}
+    assert kinds(controller, 'alert.triaged')[0]['detail']['classification'] == 'likely_true_positive'

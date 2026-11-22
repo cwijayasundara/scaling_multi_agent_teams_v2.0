@@ -45,6 +45,9 @@ class RuleTriage:
             return "likely_true_positive", "keep_stopped", "high", f"{monitor} blocked the action"
         if decision == "PAUSE" and monitor.startswith("luna-"):
             return "needs_human", "escalate", "medium", f"{monitor} paused for review"
+        if alert["kind"] == "credential.rejected":
+            return ("likely_true_positive", "escalate", "medium",
+                    "bearer token presented without or after its registered key")
         if alert["kind"] in ("run.stopped", "run.paused"):
             if reason.startswith(DETERMINISTIC_STOPS):
                 return "likely_true_positive", "keep_stopped", "high", f"deterministic enforcement: {reason}"
@@ -110,6 +113,10 @@ class ModelTriage:
         evidence = result["evidence"]
         if not isinstance(evidence, list) or not evidence or any(type(s) is not int for s in evidence) or not set(evidence) <= allowed:
             raise UnsupportedTriage("unsupported evidence")
+        rule = self.fallback.assess(alert, context)
+        if rule["classification"] == "likely_true_positive" and rule["confidence"] == "high":
+            # A deterministic block stands; the model may add a view, never lower it.
+            return {**rule, "model_report": result}
         return result
 
 
@@ -136,6 +143,10 @@ def triage_run(store, run_id: str, triager) -> list[dict]:
             "query": {"events_examined": [e["seq"] for e in context]}, "think": result["think"],
             "report": {k: result[k] for k in ("classification", "recommended_action", "confidence")},
             "evidence": result["evidence"], "decision_owner": "human", "created": time.time()}
+        if "model_report" in result:
+            disposition["triager"] = triager.fallback.version
+            disposition["model_triager"] = version
+            disposition["model_report"] = result["model_report"]
         if error is not None:
             disposition["triage_error"] = error
         if store.record_triage(run_id, disposition):
