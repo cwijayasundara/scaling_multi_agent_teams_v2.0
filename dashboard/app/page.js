@@ -3,6 +3,7 @@ import {useEffect, useRef, useState} from 'react';
 import ActivityAnimator from './components/ActivityAnimator';
 import AlertHealth from './components/AlertHealth';
 import {workModel} from '../lib/work.mjs';
+import {agentEvents} from '../lib/activity.mjs';
 
 const time = n => new Date(n*1000).toLocaleTimeString();
 async function api(path, signal) { const r=await fetch('/api/teamlab/'+path,{cache:'no-store',signal}); const d=await r.json(); if(!r.ok) throw Error(d.error || `Server returned ${r.status}`); return d; }
@@ -75,7 +76,7 @@ export default function Dashboard(){
  <AlertHealth key={id} runId={id}/>
 
  <section className="section-title"><h2>Agents</h2><span>Select an agent to inspect its recorded activity</span></section>
- <section className="agents">{actors.map(a=>{const es=visible.filter(e=>e.agent_id===a), last=es.at(-1), task=work.dynamic?work.nodes.filter(t=>t.actor===a).at(-1):data.tasks.find(t=>t.owner===a);return <button className="agent" key={a} onClick={()=>setPanel({type:'agent',agent:a,title:role(a)})}>
+ <section className="agents">{actors.map(a=>{const es=agentEvents(visible,a), last=es.at(-1), task=work.dynamic?work.nodes.filter(t=>t.actor===a).at(-1):data.tasks.find(t=>t.owner===a);return <button className="agent" key={a} onClick={()=>setPanel({type:'agent',agent:a,title:role(a)})}>
   <div className="agent-top"><Avatar agent={a}/><div><h3>{role(a)}</h3><p className="mono">{a}</p></div><Status value={cursor!==null?'PLAYBACK':task?.state||run.state}/></div>
   <p className="agent-task">{task?(work.dynamic?task.label:`Shard ${task.shard}`):'No assigned task'}</p>
   <div className="last mono">{last?.detail.action||last?.kind||'No activity yet'}</div>

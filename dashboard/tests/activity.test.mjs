@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {activity} from '../lib/activity.mjs';
+import {activity, agentEvents} from '../lib/activity.mjs';
 const actors=['coordinator','worker-0','worker-1','verifier'];
 function event(seq,kind,agent,detail){return {seq,kind,agent_id:agent,detail,created:seq}}
 function operation(seq,agent,action,args={}){return [event(seq,'action.authorized',agent,{operation_id:String(seq),action,arguments_summary:args}),event(seq+1,'action.committed',agent,{operation_id:String(seq),action})]}
@@ -30,4 +30,9 @@ test('uses actual dispatch content and keeps denied actions away from resource w
  assert.equal(r.flows[0].label,'Analyze shard 0.');
  assert.equal(r.flows[1].type,'blocked');
  assert.equal(r.counts.write,0);
+});
+test('agent cards count activity, not trace spans',()=>{
+ const events=[event(1,'span.started','worker-0',{span_id:'sp-1'}),...operation(2,'worker-0','claim_work'),event(4,'span.ended','worker-0',{span_id:'sp-1'}),event(5,'action.denied','worker-1',{action:'post_note'})];
+ assert.deepEqual(agentEvents(events,'worker-0').map(e=>e.seq),[2,3]);
+ assert.deepEqual(agentEvents(events,'worker-1').map(e=>e.seq),[5]);
 });

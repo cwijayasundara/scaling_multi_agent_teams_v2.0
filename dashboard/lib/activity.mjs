@@ -60,3 +60,7 @@ export function activity(events, actors) {
  if(terminal)for(const state of Object.values(states)){state.lastLabel=state.label;state.label=`Run ${terminal}`;state.detail=`Last observed: ${state.lastLabel}. ${state.detail}`}
  return {states,flows,counts:{read:flows.filter(f=>f.type==='read').length,write:flows.filter(f=>f.type==='write').length,message:flows.filter(f=>f.type==='message'||f.type==='handoff').length}};
 }
+// Spans are trace structure; they are not agent activity.
+export function agentEvents(events, agent) {
+ return events.filter(e=>e.agent_id===agent&&!e.kind.startsWith('span.'));
+}
